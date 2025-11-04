@@ -1,0 +1,450 @@
+<#
+.SYNOPSIS
+  Глубокая проверка целостности архивов и вложенных архивов (resume-safe).
+.DESCRIPTION
+  - Основной путь: .NET-библиотека Microsoft.CST.RecursiveExtractor — чтение всех потоков (без записи на диск),
+    фиксация цепочки вложений через FileEntry.FullPath, ловля исключений → точное место поломки.
+  - Fallback: 7z 't' (проверка контейнера), и/или CLI RecursiveExtractor (с -TempDir) — только при необходимости.
+  - Надёжное возобновление: per-root state (.archive-audit.completed.tsv), учёт длины и mtime.
+.PARAMETER Path
+  Один или несколько корневых путей (папки и/или одиночные файлы).
+.PARAMETER OutDir
+  Папка для CSV и итоговых списков (может быть на другом диске). По умолчанию — текущая.
+.PARAMETER TempDir
+  Папка для временной физической распаковки (используется редко, только при CLI-fallback). По умолчанию: $env:TEMP\ArchiveAudit.
+.PARAMETER Threads
+  Степень параллелизма. По умолчанию = числу логических ядер.
+.PARAMETER PerFileTimeoutSec
+  Таймаут на проверку одного архива (по умолчанию 1800 сек).
+.PARAMETER Restart
+  [Alias: --restart] Очистить per-root state и начать заново (CSV и broken_latest/errors_latest — заново).
+.PARAMETER Passwords
+  Список паролей для проверки защищённых контейнеров (zip/7z/rar4).
+.EXAMPLE
+  .\Test-Archives.ps1 -Path "S:\recover\SupportExternalFile","T:\" -OutDir "S:\audit" -Threads 16
+
+.EXAMPLE
+  # Возобновление после сбоя — пропустит всё, что завершилось в прошлый раз
+  .\Test-Archives.ps1 -Path "S:\recover\SupportExternalFile","T:\" -OutDir "S:\audit"
+
+.EXAMPLE
+  # С нуля
+  .\Test-Archives.ps1 -Path "S:\recover\SupportExternalFile","T:\" -OutDir "S:\audit" -Restart
+#>
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
+  [string[]]$Path,
+  [string]$OutDir = (Get-Location).Path,
+  [string]$TempDir = (Join-Path $env:TEMP "ArchiveAudit"),
+  [int]$Threads = [Math]::Max(1, [Environment]::ProcessorCount),
+  [int]$PerFileTimeoutSec = 1800,
+  [Alias('restart')]
+  [switch]$Restart,
+  [string[]]$Passwords
+)
+
+begin {
+  $ErrorActionPreference = 'Stop'
+  $PSStyle.OutputRendering = 'PlainText'
+
+  # ---------- Форматы / многотомники ----------
+  $supportedExt = @('.zip','.7z','.rar','.tar','.tgz','.tar.gz','.txz','.tar.xz','.tbz2','.tar.bz2',
+                    '.iso','.vhd','.vhdx','.vmdk','.wim','.deb','.ar','.dmg','.gzip','.bzip2','.xzip')
+  function Should-Include([IO.FileInfo]$fi) {
+    $n = $fi.Name.ToLowerInvariant()
+    $ext = $fi.Extension.ToLowerInvariant()
+    $isSupported =
+      $supportedExt -contains $ext -or
+      $n.EndsWith('.tar.gz') -or $n.EndsWith('.tar.bz2') -or $n.EndsWith('.tar.xz')
+    if (-not $isSupported) {
+      if ($n -match '\.(7z|zip|rar)\.\d{3}$') { return $n.EndsWith('.001') } # split 7z/zip/rar: только .001
+      return $false
+    }
+    # rar: r00/r01... — игнорируем; *.partNN.rar — только part1
+    if ($ext -match '^\.r\d{2,3}$') { return $false }
+    if ($n -match '\.part(\d+)\.rar$') { return ([int]$matches[1] -eq 1) }
+    # zip split: .z01 и т.п. — игнорируем, тестируем сам .zip
+    if ($ext -match '^\.z\d{2}$') { return $false }
+    return $true
+  }
+
+  # ---------- Путь -> корень; per-root state ----------
+  $roots = @()
+  foreach ($p in $Path) {
+    if (-not (Test-Path -LiteralPath $p)) { Write-Warning "Path not found: $p"; continue }
+    $full = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $p).Path)
+    $roots += $full.TrimEnd('\')
+  }
+  if ($roots.Count -eq 0) { throw "Нет валидных путей в -Path." }
+  $roots = $roots | Sort-Object { $_.Length } -Descending -Unique
+
+  $rootState = @{} # root -> .archive-audit.completed.tsv
+  foreach ($r in $roots) { $rootState[$r] = Join-Path $r '.archive-audit.completed.tsv' }
+
+  if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
+  if (-not (Test-Path $TempDir)) { New-Item -ItemType Directory -Force -Path $TempDir | Out-Null }
+
+  $csvPath       = Join-Path $OutDir 'archive-audit.csv'
+  $brokenLatest  = Join-Path $OutDir 'broken_latest.txt'
+  $brokenAll     = Join-Path $OutDir 'broken_all.txt'
+  $errorsLatest  = Join-Path $OutDir 'errors_latest.txt'
+
+  if ($Restart) {
+    foreach ($sf in $rootState.Values) { if (Test-Path $sf) { Remove-Item $sf -Force } }
+    foreach ($f in @($csvPath,$brokenLatest,$errorsLatest)) { if (Test-Path $f) { Remove-Item $f -Force } }
+  }
+  if (-not (Test-Path $csvPath)) { "TopPath,Status,Chain,Detail" | Out-File -FilePath $csvPath -Encoding UTF8 }
+  if (Test-Path $brokenLatest) { Remove-Item $brokenLatest -Force }
+  if (Test-Path $errorsLatest) { Remove-Item $errorsLatest -Force }
+  if (-not (Test-Path $brokenAll)) { New-Item -ItemType File -Path $brokenAll | Out-Null }
+
+  # ---------- 7-Zip fallback ----------
+  function Find-7z {
+    $cmd = Get-Command 7z.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $candidates = @("$Env:ProgramFiles\7-Zip\7z.exe", "$Env:ProgramFiles(x86)\7-Zip\7z.exe")
+    foreach ($c in $candidates) { if (Test-Path $c) { return $c } }
+    return $null
+  }
+  $SevenZip = Find-7z
+  $Use7z = [bool]$SevenZip
+  if ($Use7z) { Write-Host "7-Zip: $SevenZip (fallback активен)" -ForegroundColor Cyan }
+  else { Write-Host "7-Zip не найден — fallback будет ограничен." -ForegroundColor DarkYellow }
+
+  function Invoke-7zTest([string]$exe, [string]$file, [int]$timeoutSec) {
+    if (-not (Test-Path $exe)) { return @{ Exit = 127; Err = "7z not found" } }
+    $psi = [System.Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $exe
+    $psi.Arguments = "t `"$file`" -bso0 -bsp0 -bse0"
+    $psi.RedirectStandardError = $true
+    $psi.UseShellExecute = $false
+    $p = [System.Diagnostics.Process]::Start($psi)
+    try {
+      if (-not $p.WaitForExit($timeoutSec*1000)) { try { $p.Kill($true) } catch {}; return @{ Exit=124; Err="7z timeout after $timeoutSec s" } }
+      $err = $p.StandardError.ReadToEnd()
+      return @{ Exit=$p.ExitCode; Err=$err }
+    } finally { $p.Dispose() }
+  }
+
+  # ---------- Безопасная дозапись (Mutex) ----------
+  function Get-MD5Hex([string]$s) {
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    try { ($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($s)) | ForEach-Object { $_.ToString("x2") }) -join '' } finally { $md5.Dispose() }
+  }
+  function Get-NamedMutex([string]$path) {
+    $name = "Global\ArchiveAudit_" + (Get-MD5Hex $path)
+    $createdNew = $false
+    return [System.Threading.Mutex]::new($false, $name, [ref]$createdNew)
+  }
+  function Append-LineSafe([string]$filePath, [string]$line) {
+    $mtx = Get-NamedMutex $filePath
+    $mtx.WaitOne() | Out-Null
+    try { Add-Content -Path $filePath -Value $line -Encoding UTF8 }
+    finally { $mtx.ReleaseMutex() | Out-Null; $mtx.Dispose() }
+  }
+
+  # ---------- per-root Completed Set ----------
+  function Load-CompletedSet([string]$stateFile) {
+    $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    if (-not (Test-Path $stateFile)) { return $set }
+    try {
+      Get-Content -LiteralPath $stateFile -Encoding UTF8 | ForEach-Object {
+        if ([string]::IsNullOrWhiteSpace($_)) { return }
+        $parts = $_ -split "`t"
+        if ($parts.Length -lt 4) { return }
+        $status = $parts[0]; $p = $parts[1]; $lenStr = $parts[2]; $tsStr = $parts[3]
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return }
+        $fi = Get-Item -LiteralPath $p -ErrorAction SilentlyContinue
+        if ($null -eq $fi) { return }
+        $okLen = $false; $okTs = $false
+        try { $okLen = ([int64]$lenStr -eq [int64]$fi.Length) } catch {}
+        try { $okTs  = ([datetime]::Parse($tsStr).ToUniversalTime() -eq $fi.LastWriteTimeUtc) } catch {}
+        if ($okLen -and $okTs) { $null = $set.Add($fi.FullName) }
+      }
+    } catch {
+      Write-Warning "Ошибка чтения state $stateFile: $($_.Exception.Message)"
+    }
+    return $set
+  }
+
+  # ---------- Определение корня для файла ----------
+  function Get-RootFor([string]$fullPath) {
+    foreach ($r in $roots) { if ($fullPath.StartsWith($r, [StringComparison]::OrdinalIgnoreCase)) { return $r } }
+    return $null
+  }
+
+  # ---------- Сканирование и фильтрация ----------
+  $completedAll = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($r in $roots) { (Load-CompletedSet $rootState[$r]) | ForEach-Object { [void]$completedAll.Add($_) } }
+
+  $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  $targets = New-Object System.Collections.Generic.List[System.IO.FileInfo]
+  foreach ($r in $roots) {
+    if (Test-Path -LiteralPath $r -PathType Leaf) {
+      $fi = Get-Item -LiteralPath $r
+      if ($fi -and (Should-Include $fi) -and -not $completedAll.Contains($fi.FullName)) { if ($seen.Add($fi.FullName)) { $targets.Add($fi) } }
+      continue
+    }
+    Get-ChildItem -LiteralPath $r -Recurse -File -Force -ErrorAction SilentlyContinue |
+      Where-Object { Should-Include $_ } |
+      ForEach-Object {
+        if (-not $completedAll.Contains($_.FullName)) {
+          if ($seen.Add($_.FullName)) { $targets.Add($_) }
+        }
+      }
+  }
+
+  if ($targets.Count -eq 0) { Write-Host "Нечего делать: всё уже завершено или архивов нет." -ForegroundColor Green; return }
+
+  # ---------- Загрузка .NET-библиотеки RecursiveExtractor ----------
+  $Script:RE_NS = $null
+  $Script:REAsmDir = $null
+
+  function Ensure-RELibrary {
+    # Уже загружено?
+    try { $null = [Microsoft.CST.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.RecursiveExtractor'; return $true } catch {}
+    try { $null = [Microsoft.CST.OpenSource.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.OpenSource.RecursiveExtractor'; return $true } catch {}
+
+    # Попробуем гарантировать установку dotnet-tool (CLI), из которого возьмём DLL
+    try {
+      $list = (& dotnet tool list -g) 2>$null | Out-String
+      if ($null -eq ($list | Select-String 'Microsoft.CST.RecursiveExtractor.Cli')) {
+        Write-Host "Устанавливаю Microsoft.CST.RecursiveExtractor.Cli…" -ForegroundColor Yellow
+        & dotnet tool install -g Microsoft.CST.RecursiveExtractor.Cli | Out-Null
+      }
+    } catch {
+      Write-Warning "Не удалось установить dotnet-tool: $($_.Exception.Message)"
+    }
+
+    # Ищем DLL в .store tool'а и в .nuget\packages
+    $cands = @()
+    $storeRoot = Join-Path $env:USERPROFILE ".dotnet\tools\.store\microsoft.cst.recursiveextractor.cli"
+    if (Test-Path $storeRoot) {
+      $cands += Get-ChildItem -Path $storeRoot -Recurse -Filter "Microsoft.CST.RecursiveExtractor.dll" -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty DirectoryName -Unique
+    }
+    $nugetRoot = Join-Path $env:USERPROFILE ".nuget\packages\microsoft.cst.recursiveextractor"
+    if (Test-Path $nugetRoot) {
+      $cands += Get-ChildItem -Path $nugetRoot -Recurse -Filter "Microsoft.CST.RecursiveExtractor.dll" -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty DirectoryName -Unique
+    }
+    if (-not $cands -or $cands.Count -eq 0) { return $false }
+
+    $dir = ($cands | Sort-Object { $_.Length } -Descending | Select-Object -First 1)
+    $Script:REAsmDir = $dir
+
+    # Резолвер для зависимостей из той же папки
+    [System.Runtime.Loader.AssemblyLoadContext]::Default.add_Resolving({
+      param($context, $name)
+      if ([string]::IsNullOrEmpty($Script:REAsmDir)) { return $null }
+      $candidate = Join-Path $Script:REAsmDir ($name.Name + '.dll')
+      if (Test-Path $candidate) { return $context.LoadFromAssemblyPath($candidate) }
+      return $null
+    }) | Out-Null
+
+    # Предзагрузка всех .dll
+    Get-ChildItem -LiteralPath $dir -Filter *.dll -ErrorAction SilentlyContinue | ForEach-Object {
+      try { [System.Reflection.Assembly]::LoadFrom($_.FullName) | Out-Null } catch {}
+    }
+
+    # Проверим пространство имён
+    try { $null = [Microsoft.CST.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.RecursiveExtractor'; return $true } catch {}
+    try { $null = [Microsoft.CST.OpenSource.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.OpenSource.RecursiveExtractor'; return $true } catch {}
+    return $false
+  }
+
+  $REAvailable = Ensure-RELibrary
+  if ($REAvailable) { Write-Host "RecursiveExtractor .NET библиотека загружена: $RE_NS (из $REAsmDir)" -ForegroundColor Cyan }
+  else { Write-Host "Не удалось загрузить библиотеку RecursiveExtractor — будет больше fallback'ов." -ForegroundColor DarkYellow }
+
+  # ---------- Проверка одной записи через библиотеку ----------
+  function Test-ArchiveDeep-Lib([string]$file, [int]$timeoutSec, [string[]]$pwds) {
+    $result = [ordered]@{ Status=""; Detail=""; BrokenChains=@() }
+    if (-not $REAvailable) { $result.Status = "UNAVAILABLE"; $result.Detail = "Library not available"; return $result }
+
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $top = $file
+    $broken = New-Object System.Collections.Generic.List[string]
+
+    # Хелпер для безопасной установки опций (маски версии API)
+    function Set-Opt($obj, $name, $value) {
+      $prop = $obj.GetType().GetProperty($name)
+      if ($prop -and $prop.CanWrite) { $prop.SetValue($obj, $value) }
+    }
+
+    try {
+      $ExtractorType = [Type]::GetType("$RE_NS.Extractor, Microsoft.CST.RecursiveExtractor", $false)
+      if (-not $ExtractorType) { $ExtractorType = [Type]::GetType("$RE_NS.Extractor") }
+      $OptionsType   = [Type]::GetType("$RE_NS.ExtractorOptions, Microsoft.CST.RecursiveExtractor", $false)
+      if (-not $OptionsType) { $OptionsType = [Type]::GetType("$RE_NS.ExtractorOptions") }
+
+      $extractor = [Activator]::CreateInstance($ExtractorType)
+      $opts = if ($OptionsType) { [Activator]::CreateInstance($OptionsType) } else { $null }
+      if ($opts) {
+        Set-Opt $opts 'ExtractSelfOnFail' $true
+        Set-Opt $opts 'Parallel' $false
+        if ($pwds) { Set-Opt $opts 'Passwords' ([string[]]$pwds) }
+      }
+
+      # Получаем перечисление FileEntry
+      $entries = if ($opts) { $extractor.Extract($file, $opts) } else { $extractor.Extract($file) }
+
+      foreach ($entry in $entries) {
+        try {
+          # Верификация: читаем весь Stream, с контролем таймаута
+          $stream = $entry.Content
+          $buf = New-Object byte[] 65536
+          while (($read = $stream.Read($buf, 0, $buf.Length)) -gt 0) {
+            if ($sw.Elapsed.TotalSeconds -ge $timeoutSec) { throw [System.TimeoutException]::new("Timeout $timeoutSec s") }
+          }
+          $stream.Dispose()
+        } catch {
+          # Цепочка вложений:
+          $full = $entry.FullPath
+          if (-not $full) { $full = $top } # защитный случай
+          # Нормализация: если цепочка не начинается с top, добавим top как префикс
+          if ($full -and -not $full.StartsWith($top, [StringComparison]::OrdinalIgnoreCase)) { $full = "$top!$full" }
+          $msg = $_.Exception.Message -replace '[\r\n]+',' '
+          $broken.Add("$full :: $msg")
+        }
+      }
+
+      if ($broken.Count -gt 0) {
+        $result.Status = "BROKEN"
+        $result.BrokenChains = $broken.ToArray()
+        $result.Detail = "Broken entries: " + $broken.Count
+      } else {
+        $result.Status = "OK"
+      }
+    }
+    catch [System.OverflowException] {
+      $result.Status = "BROKEN"
+      $result.Detail = "Zip bomb / Quine detected: " + ($_.Exception.Message -replace '[\r\n]+',' ')
+      $result.BrokenChains = @("$top :: ZipBomb/Quine")
+    }
+    catch [System.TimeoutException] {
+      $result.Status = "TIMEOUT"
+      $result.Detail = "Timeout $timeoutSec s"
+    }
+    catch {
+      $result.Status = "ERROR"
+      $result.Detail = $_.Exception.Message -replace '[\r\n]+',' '
+    }
+    finally { $sw.Stop() }
+
+    return $result
+  }
+
+  # ---------- прогресс ----------
+  function Show-Progress([int]$done, [int]$all, [TimeSpan]$elapsed) {
+    if ($done -lt 1) { return }
+    $pct = [math]::Round(100.0 * $done / $all, 2)
+    $eps = $elapsed.TotalSeconds / [math]::Max(1, $done)
+    $etaSec = [int][math]::Round($eps * ($all - $done))
+    Write-Host ("[{0}%] {1}/{2} | ETA {3}s" -f $pct, $done, $all, $etaSec)
+  }
+
+  # ---------- сборка меты для CSV ----------
+  function CsvEsc([string]$s) { if ($null -eq $s) { return "" } return $s.Replace('"','""') }
+}
+
+process {}
+
+end {
+  Write-Host ("Найдено архивов к проверке: {0}" -f $targets.Count) -ForegroundColor Cyan
+
+  $po = [System.Threading.Tasks.ParallelOptions]::new()
+  $po.MaxDegreeOfParallelism = $Threads
+
+  $total = $targets.Count
+  $processed = 0
+  $swAll = [System.Diagnostics.Stopwatch]::StartNew()
+
+  [System.Threading.Tasks.Parallel]::ForEach($targets, $po, {
+    param($fi)
+
+    $topPath = $fi.FullName
+    $root = Get-RootFor $topPath
+    $stateFile = if ($root) { $rootState[$root] } else { $null }
+
+    # 1) Основной тест: библиотека (глубокая верификация)
+    $res = Test-ArchiveDeep-Lib -file $topPath -timeoutSec $PerFileTimeoutSec -pwds $Passwords
+
+    $status = $res.Status
+    $detail = $res.Detail
+    $chains = @()
+    if ($res.BrokenChains) { $chains = $res.BrokenChains }
+
+    # 2) Fallback: 7z t — если ERROR/TIMEOUT или вообще нет библиотеки
+    if ( ($status -eq "ERROR" -or $status -eq "TIMEOUT" -or $status -eq "UNAVAILABLE") -and $Use7z ) {
+      $z = Invoke-7zTest -exe $SevenZip -file $topPath -timeoutSec [Math]::Min($PerFileTimeoutSec, 1200)
+      if ($z.Exit -eq 0) {
+        # Контейнер цел (вложений не знаем) — считаем OK(via 7z)
+        $status = "OK"
+        $detail = "verified via 7z (container)"
+      } else {
+        if ($status -eq "UNAVAILABLE") { $status = "BROKEN" } # лучший из вариантов
+        $detail = if ($detail) { $detail } else { $z.Err -replace '[\r\n]+',' ' }
+        if (-not $chains -or $chains.Count -eq 0) { $chains = @("$topPath :: " + ($detail ?? "7z failed")) }
+      }
+    }
+
+    # 3) CSV-запись
+    if ($status -eq "BROKEN" -and $chains.Count -gt 0) {
+      foreach ($ch in $chains) {
+        $line = ('"{0}","{1}","{2}","{3}"' -f (CsvEsc $topPath), 'BROKEN', (CsvEsc $ch), (CsvEsc $detail))
+        Append-LineSafe -filePath $csvPath -line $line
+      }
+    } else {
+      $line = ('"{0}","{1}","{2}","{3}"' -f (CsvEsc $topPath), (CsvEsc $status), "", (CsvEsc $detail))
+      Append-LineSafe -filePath $csvPath -line $line
+    }
+
+    # 4) Итоговые списки
+    if ($status -eq 'BROKEN') {
+      if ($chains.Count -gt 0) {
+        foreach ($ch in $chains) {
+          Append-LineSafe -filePath $brokenLatest -line $ch
+          Append-LineSafe -filePath $brokenAll    -line $ch
+        }
+      } else {
+        Append-LineSafe -filePath $brokenLatest -line $topPath
+        Append-LineSafe -filePath $brokenAll    -line $topPath
+      }
+    }
+
+    # 5) Состояние (только финал → state)
+    if ($stateFile -and ($status -eq 'OK' -or $status -eq 'BROKEN')) {
+      $line = ('{0}' + "`t" + '{1}' + "`t" + '{2}' + "`t" + '{3}') -f $status, $topPath, $fi.Length, $fi.LastWriteTimeUtc.ToString("o")
+      Append-LineSafe -filePath $stateFile -line $line
+    }
+
+    if ($status -ne 'OK' -and $status -ne 'BROKEN') {
+      Append-LineSafe -filePath $errorsLatest -line ($topPath + "`t" + ($detail ?? $status))
+    }
+
+    $done = [System.Threading.Interlocked]::Increment([ref]$processed)
+    if (($done % [Math]::Max(5, [int]($total/100))) -eq 0) {
+      Show-Progress -done $done -all $total -elapsed $swAll.Elapsed
+    }
+  })
+
+  $swAll.Stop()
+  Write-Host ("Готово: {0} файлов, за {1:hh\:mm\:ss}. CSV: {2}" -f $total, $swAll.Elapsed, $csvPath) -ForegroundColor Green
+  Write-Host ("State per-root: {0}" -f (($rootState.Values) -join '; '))
+  Write-Host ("BROKEN (сессия): {0}" -f $brokenLatest)
+  Write-Host ("BROKEN (кумулятив): {0}" -f $brokenAll)
+  if (Test-Path $errorsLatest -PathType Leaf -ErrorAction SilentlyContinue) {
+    if ((Get-Item $errorsLatest).Length -gt 0) {
+      Write-Host ("Ошибки/таймауты (сессия): {0}" -f $errorsLatest) -ForegroundColor DarkYellow
+    }
+  }
+
+  <#
+  ПРИМЕРЫ:
+    .\Test-Archives.ps1 -Path "S:\recover\SupportExternalFile","T:\" -OutDir "S:\audit" -Threads 16
+    .\Test-Archives.ps1 -Path "S:\recover\SupportExternalFile","T:\" -OutDir "S:\audit" -Restart
+    .\Test-Archives.ps1 -Path "T:\some.zip" -OutDir "S:\audit" -Passwords "secret1","secret2"
+  #>
+}

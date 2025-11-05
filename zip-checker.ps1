@@ -79,6 +79,11 @@ begin {
   if ($roots.Count -eq 0) { throw "Нет валидных путей в -Path." }
   $roots = $roots | Sort-Object { $_.Length } -Descending -Unique
 
+  if ($Threads -gt 1) {
+    Write-Warning "Параллельная обработка временно отключена, сканирование продолжится последовательно."
+    $Threads = 1
+  }
+
   $rootState = @{} # root -> .archive-audit.completed.tsv
   foreach ($r in $roots) {
     if ([IO.Directory]::Exists($r)) {
@@ -516,24 +521,10 @@ end {
   [int]$processed = 0
   $swAll = [System.Diagnostics.Stopwatch]::StartNew()
 
-  if ($Threads -le 1 -or $total -le 1) {
-    foreach ($fi in $targets) {
-      Invoke-One -fi $fi
-      $done = [System.Threading.Interlocked]::Increment([ref]$processed)
-      if (($done % [Math]::Max(1, [int]($total/100))) -eq 0) { Show-Progress -done $done -all $total -elapsed $swAll.Elapsed }
-    }
-  } else {
-    $progressStep = [Math]::Max(5, [int]($total/100))
-    if ($progressStep -le 0) { $progressStep = 1 }
-
-    $targets | ForEach-Object -Parallel {
-      param($step)
-      Invoke-One -fi $_
-      $done = [System.Threading.Interlocked]::Increment([ref]$using:processed)
-      if (($done % $step) -eq 0) {
-        Show-Progress -done $done -all $using:total -elapsed $using:swAll.Elapsed
-      }
-    } -ThrottleLimit $Threads -ArgumentList $progressStep
+  foreach ($fi in $targets) {
+    Invoke-One -fi $fi
+    $done = [System.Threading.Interlocked]::Increment([ref]$processed)
+    if (($done % [Math]::Max(1, [int]($total/100))) -eq 0) { Show-Progress -done $done -all $total -elapsed $swAll.Elapsed }
   }
 
   $swAll.Stop()

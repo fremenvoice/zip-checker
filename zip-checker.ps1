@@ -11,7 +11,7 @@
 .PARAMETER OutDir
   Папка для CSV и итоговых списков (может быть на другом диске). По умолчанию — текущая.
 .PARAMETER TempDir
-  Папка для временной физической распаковки (используется редко, только при CLI-fallback). По умолчанию: $env:TEMP\ArchiveAudit.
+  Папка для временной физической распаковки (используется редко, только при CLI-fallback). По умолчанию: T:\\ArchiveAudit.
 .PARAMETER Threads
   Степень параллелизма. По умолчанию = числу логических ядер.
 .PARAMETER PerFileTimeoutSec
@@ -33,37 +33,35 @@ param(
   [string[]]$Passwords
 )
 
-$Script:OriginalTempEnv = $null
-$Script:TempSessionDir = $null
-$Script:ArchiveAuditCleanupInvoked = $false
-$Script:TempBaseDir = $null
 
-function Invoke-ArchiveAuditCleanup {
-  if ($Script:ArchiveAuditCleanupInvoked) { return }
-  $Script:ArchiveAuditCleanupInvoked = $true
-
-  if ($Script:OriginalTempEnv) {
-    if ($Script:OriginalTempEnv.ContainsKey('TEMP')) { $env:TEMP = $Script:OriginalTempEnv['TEMP'] }
-    if ($Script:OriginalTempEnv.ContainsKey('TMP'))  { $env:TMP  = $Script:OriginalTempEnv['TMP'] }
-  }
-
-  if ($Script:TempSessionDir -and (Test-Path -LiteralPath $Script:TempSessionDir)) {
-    try {
-      Remove-Item -LiteralPath $Script:TempSessionDir -Recurse -Force -ErrorAction Stop
-    } catch {
-      Write-Warning ("Не удалось удалить временную папку {0}: {1}" -f $Script:TempSessionDir, $_.Exception.Message)
-    }
-  }
-}
-
-trap {
-  try { Invoke-ArchiveAuditCleanup } catch {}
-  throw
-}
 
 begin {
-  $ErrorActionPreference = 'Stop'
-  try { $PSStyle.OutputRendering = 'PlainText' } catch {}
+  try {
+    $Script:OriginalTempEnv = $null
+    $Script:TempSessionDir = $null
+    $Script:ArchiveAuditCleanupInvoked = $false
+    $Script:TempBaseDir = $null
+
+    function Invoke-ArchiveAuditCleanup {
+      if ($Script:ArchiveAuditCleanupInvoked) { return }
+      $Script:ArchiveAuditCleanupInvoked = $true
+
+      if ($Script:OriginalTempEnv) {
+        if ($Script:OriginalTempEnv.Contains('TEMP')) { $env:TEMP = $Script:OriginalTempEnv['TEMP'] }
+        if ($Script:OriginalTempEnv.Contains('TMP'))  { $env:TMP  = $Script:OriginalTempEnv['TMP'] }
+      }
+
+      if ($Script:TempSessionDir -and (Test-Path -LiteralPath $Script:TempSessionDir)) {
+        try {
+          Remove-Item -LiteralPath $Script:TempSessionDir -Recurse -Force -ErrorAction Stop
+        } catch {
+          Write-Warning ("Не удалось удалить временную папку {0}: {1}" -f $Script:TempSessionDir, $_.Exception.Message)
+        }
+      }
+    }
+
+    $ErrorActionPreference = 'Stop'
+    try { $PSStyle.OutputRendering = 'PlainText' } catch {}
 
   # Подсказка, если запущено в Windows PowerShell 5.1 (Desktop)
   try {
@@ -565,32 +563,41 @@ begin {
       Append-LineSafe -filePath $errorsLatest -line ($topPath + "`t" + $errDetail)
     }
   }
+  } catch {
+    Invoke-ArchiveAuditCleanup
+    throw
+  }
 }
 
 process {}
 
 end {
-  Write-Host ("Найдено архивов к проверке: {0}" -f $targets.Count) -ForegroundColor Cyan
+  try {
+    Write-Host ("Задач к проверке: {0}" -f $targets.Count) -ForegroundColor Cyan
 
-  $total = $targets.Count
-  [int]$processed = 0
-  $swAll = [System.Diagnostics.Stopwatch]::StartNew()
+    $total = $targets.Count
+    [int]$processed = 0
+    $swAll = [System.Diagnostics.Stopwatch]::StartNew()
 
-  foreach ($fi in $targets) {
-    Invoke-One -fi $fi
-    $done = [System.Threading.Interlocked]::Increment([ref]$processed)
-    if (($done % [Math]::Max(1, [int]($total/100))) -eq 0) { Show-Progress -done $done -all $total -elapsed $swAll.Elapsed }
-  }
+    foreach ($fi in $targets) {
+      Invoke-One -fi $fi
+      $done = [System.Threading.Interlocked]::Increment([ref]$processed)
+      if (($done % [Math]::Max(1, [int]($total/100))) -eq 0) { Show-Progress -done $done -all $total -elapsed $swAll.Elapsed }
+    }
 
-  $swAll.Stop()
-  Write-Host ("Готово: {0} файлов, за {1:hh\:mm\:ss}. CSV: {2}" -f $total, $swAll.Elapsed, $csvPath) -ForegroundColor Green
-  Write-Host ("State per-root: {0}" -f (($rootState.Values) -join '; '))
-  Write-Host ("BROKEN (сессия): {0}" -f $brokenLatest)
-  Write-Host ("BROKEN (кумулятив): {0}" -f $brokenAll)
-  if (Test-Path $errorsLatest -PathType Leaf -ErrorAction SilentlyContinue) {
-    if ((Get-Item $errorsLatest).Length -gt 0) {
-      Write-Host ("Ошибки/таймауты (сессия): {0}" -f $errorsLatest) -ForegroundColor DarkYellow
+    $swAll.Stop()
+    Write-Host ("Итого: {0} архивов, за {1:hh\\:mm\\:ss}. CSV: {2}" -f $total, $swAll.Elapsed, $csvPath) -ForegroundColor Green
+    Write-Host ("State per-root: {0}" -f (($rootState.Values) -join '; '))
+    Write-Host ("BROKEN (последние): {0}" -f $brokenLatest)
+    Write-Host ("BROKEN (все): {0}" -f $brokenAll)
+    if (Test-Path $errorsLatest -PathType Leaf -ErrorAction SilentlyContinue) {
+      if ((Get-Item $errorsLatest).Length -gt 0) {
+        Write-Host ("Ошибки/таймауты (сессия): {0}" -f $errorsLatest) -ForegroundColor DarkYellow
+      }
     }
   }
-  Invoke-ArchiveAuditCleanup
+  finally {
+    Invoke-ArchiveAuditCleanup
+  }
 }
+

@@ -33,7 +33,7 @@ param(
   [string[]]$Passwords
 )
 
-[ordered]$Script:OriginalTempEnv = $null
+$Script:OriginalTempEnv = $null
 $Script:TempSessionDir = $null
 $Script:ArchiveAuditCleanupInvoked = $false
 $Script:TempBaseDir = $null

@@ -201,12 +201,20 @@ begin {
     $psi.Arguments = "t `"$file`" -bso0 -bsp0"
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
-    $p = [System.Diagnostics.Process]::Start($psi)
+    $p = $null
+    try {
+      $p = [System.Diagnostics.Process]::Start($psi)
+    } catch {
+      $errMsg = $_.Exception.Message -replace '[\r\n]+', ' '
+      return @{ Exit = 125; Err = "7z launch failed: $errMsg" }
+    }
     try {
       if (-not $p.WaitForExit($timeoutSec*1000)) { try { $p.Kill($true) } catch {}; return @{ Exit=124; Err="7z timeout after $timeoutSec s" } }
       $err = $p.StandardError.ReadToEnd()
       return @{ Exit=$p.ExitCode; Err=$err }
-    } finally { $p.Dispose() }
+    } finally {
+      if ($p) { $p.Dispose() }
+    }
   }
 
   # ---------- Безопасная дозапись (Mutex) ----------
@@ -507,6 +515,12 @@ begin {
           $currentPath = Format-EntryPath $entry
           $lastPath = $currentPath
           if ($entry.EntryStatus -and $entry.EntryStatus -ne [Microsoft.CST.RecursiveExtractor.FileEntryStatus]::Default) {
+            # Dispose skipped entry stream to release temp file handles
+            $skipStream = $null
+            try { $skipStream = $entry.Content } catch {}
+            if ($skipStream) {
+              try { $skipStream.Dispose() } catch {}
+            }
             $broken.Add("$currentPath :: EntryStatus=$($entry.EntryStatus)")
             continue
           }

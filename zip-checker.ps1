@@ -229,6 +229,31 @@ begin {
   # ---------- Загрузка .NET-библиотеки RecursiveExtractor ----------
   $Script:RE_NS = $null
   $Script:REAsmDir = $null
+  $Script:REPrimaryAssembly = $null
+
+  function Get-REType([string]$typeFullName) {
+    foreach ($asm in [AppDomain]::CurrentDomain.GetAssemblies()) {
+      try {
+        $t = $asm.GetType($typeFullName, $false, $true)
+      } catch { $t = $null }
+      if ($t) { return $t }
+    }
+    if ($Script:REPrimaryAssembly -ne $null) {
+      try {
+        return $Script:REPrimaryAssembly.GetType($typeFullName, $false, $true)
+      } catch { return $null }
+    }
+    if ($Script:REAsmDir) {
+      $dll = Join-Path $Script:REAsmDir 'RecursiveExtractor.dll'
+      if (Test-Path $dll) {
+        try {
+          $Script:REPrimaryAssembly = [System.Runtime.Loader.AssemblyLoadContext]::Default.LoadFromAssemblyPath($dll)
+          return $Script:REPrimaryAssembly.GetType($typeFullName, $false, $true)
+        } catch { return $null }
+      }
+    }
+    return $null
+  }
 
   function Ensure-RELibrary {
 
@@ -303,12 +328,22 @@ begin {
 
     # Предзагрузка всех .dll
     Get-ChildItem -LiteralPath $dir -Filter *.dll -ErrorAction SilentlyContinue | ForEach-Object {
-      try { [System.Reflection.Assembly]::LoadFrom($_.FullName) | Out-Null } catch {}
+      try {
+        if (-not $Script:REPrimaryAssembly -and ($_.BaseName -eq 'RecursiveExtractor')) {
+          $Script:REPrimaryAssembly = [System.Runtime.Loader.AssemblyLoadContext]::Default.LoadFromAssemblyPath($_.FullName)
+        } else {
+          [System.Runtime.Loader.AssemblyLoadContext]::Default.LoadFromAssemblyPath($_.FullName) | Out-Null
+        }
+      } catch {
+        try { [System.Reflection.Assembly]::LoadFrom($_.FullName) | Out-Null } catch {}
+      }
     }
 
     # Проверим пространство имён
-    try { $null = [Microsoft.CST.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.RecursiveExtractor'; return $true } catch {}
-    try { $null = [Microsoft.CST.OpenSource.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.OpenSource.RecursiveExtractor'; return $true } catch {}
+    $type = Get-REType 'Microsoft.CST.RecursiveExtractor.Extractor'
+    if ($type) { $Script:RE_NS = 'Microsoft.CST.RecursiveExtractor'; return $true }
+    $type = Get-REType 'Microsoft.CST.OpenSource.RecursiveExtractor.Extractor'
+    if ($type) { $Script:RE_NS = 'Microsoft.CST.OpenSource.RecursiveExtractor'; return $true }
     return $false
   }
 
@@ -332,10 +367,10 @@ begin {
     }
 
     try {
-      $ExtractorType = [Type]::GetType("$RE_NS.Extractor, Microsoft.CST.RecursiveExtractor", $false)
-      if (-not $ExtractorType) { $ExtractorType = [Type]::GetType("$RE_NS.Extractor") }
-      $OptionsType   = [Type]::GetType("$RE_NS.ExtractorOptions, Microsoft.CST.RecursiveExtractor", $false)
-      if (-not $OptionsType) { $OptionsType = [Type]::GetType("$RE_NS.ExtractorOptions") }
+      $ExtractorType = Get-REType "$RE_NS.Extractor"
+      $OptionsType   = Get-REType "$RE_NS.ExtractorOptions"
+
+      if (-not $ExtractorType) { throw "Extractor type not found in RecursiveExtractor assemblies." }
 
       $extractor = [Activator]::CreateInstance($ExtractorType)
       $opts = if ($OptionsType) { [Activator]::CreateInstance($OptionsType) } else { $null }

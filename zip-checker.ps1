@@ -315,17 +315,6 @@ begin {
     $dir = ($cands | Sort-Object { $_.Length } -Descending | Select-Object -First 1)
     $Script:REAsmDir = $dir
 
-    # Резолвер зависимостей (если доступен)
-    try {
-      [System.Runtime.Loader.AssemblyLoadContext]::Default.add_Resolving({
-        param($context, $name)
-        if ([string]::IsNullOrEmpty($Script:REAsmDir)) { return $null }
-        $candidate = Join-Path $Script:REAsmDir ($name.Name + '.dll')
-        if (Test-Path $candidate) { return $context.LoadFromAssemblyPath($candidate) }
-        return $null
-      }) | Out-Null
-    } catch {}
-
     # Предзагрузка всех .dll
     Get-ChildItem -LiteralPath $dir -Filter *.dll -ErrorAction SilentlyContinue | ForEach-Object {
       try {

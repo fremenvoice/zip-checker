@@ -523,20 +523,19 @@ end {
       if (($done % [Math]::Max(1, [int]($total/100))) -eq 0) { Show-Progress -done $done -all $total -elapsed $swAll.Elapsed }
     }
   } else {
-    $po = [System.Threading.Tasks.ParallelOptions]::new()
-    $po.MaxDegreeOfParallelism = $Threads
+    $invokeOneFn = ${function:Invoke-One}
+    $showProgressFn = ${function:Show-Progress}
+    $step = [Math]::Max(5, [int]($total/100))
+    if ($step -le 0) { $step = 1 }
 
-    $action = [System.Action[System.IO.FileInfo]]{
-      param([System.IO.FileInfo]$fi)
-      Invoke-One -fi $fi
-      [System.Threading.Interlocked]::Increment([ref]$using:processed) | Out-Null
-      if (($using:processed % [Math]::Max(5, [int]($using:total/100))) -eq 0) {
-        Show-Progress -done $using:processed -all $using:total -elapsed $using:swAll.Elapsed
+    $targets | ForEach-Object -Parallel {
+      param($fi, $invokeOne, $showProgress, $stepSize)
+      & $invokeOne -fi $fi
+      $done = [System.Threading.Interlocked]::Increment([ref]$using:processed)
+      if (($done % $stepSize) -eq 0) {
+        & $showProgress -done $done -all $using:total -elapsed $using:swAll.Elapsed
       }
-    }
-
-    $targetsEnum = [System.Collections.Generic.IEnumerable[System.IO.FileInfo]]$targets
-    [System.Threading.Tasks.Parallel]::ForEach($targetsEnum, $po, $action)
+    } -ThrottleLimit $Threads -ArgumentList $invokeOneFn, $showProgressFn, $step
   }
 
   $swAll.Stop()

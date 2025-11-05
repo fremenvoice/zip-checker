@@ -26,12 +26,40 @@ param(
   [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
   [string[]]$Path,
   [string]$OutDir = (Get-Location).Path,
-  [string]$TempDir = (Join-Path $env:TEMP "ArchiveAudit"),
+  [string]$TempDir = (Join-Path 'T:\' "ArchiveAudit"),
   [int]$Threads = [Math]::Max(1, [Environment]::ProcessorCount),
   [int]$PerFileTimeoutSec = 1800,
   [switch]$Restart,
   [string[]]$Passwords
 )
+
+[ordered]$Script:OriginalTempEnv = $null
+$Script:TempSessionDir = $null
+$Script:ArchiveAuditCleanupInvoked = $false
+$Script:TempBaseDir = $null
+
+function Invoke-ArchiveAuditCleanup {
+  if ($Script:ArchiveAuditCleanupInvoked) { return }
+  $Script:ArchiveAuditCleanupInvoked = $true
+
+  if ($Script:OriginalTempEnv) {
+    if ($Script:OriginalTempEnv.ContainsKey('TEMP')) { $env:TEMP = $Script:OriginalTempEnv['TEMP'] }
+    if ($Script:OriginalTempEnv.ContainsKey('TMP'))  { $env:TMP  = $Script:OriginalTempEnv['TMP'] }
+  }
+
+  if ($Script:TempSessionDir -and (Test-Path -LiteralPath $Script:TempSessionDir)) {
+    try {
+      Remove-Item -LiteralPath $Script:TempSessionDir -Recurse -Force -ErrorAction Stop
+    } catch {
+      Write-Warning ("Не удалось удалить временную папку {0}: {1}" -f $Script:TempSessionDir, $_.Exception.Message)
+    }
+  }
+}
+
+trap {
+  try { Invoke-ArchiveAuditCleanup } catch {}
+  throw
+}
 
 begin {
   $ErrorActionPreference = 'Stop'
@@ -110,7 +138,30 @@ begin {
   }
 
   if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
-  if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Force -Path $TempDir | Out-Null }
+  if ([string]::IsNullOrWhiteSpace($TempDir)) { throw "TempDir must not be empty." }
+  try {
+    $TempDir = [IO.Path]::GetFullPath($TempDir)
+  } catch {
+    throw ("TempDir path invalid ({0}): {1}" -f $TempDir, $_.Exception.Message)
+  }
+  if (-not (Test-Path -LiteralPath $TempDir)) {
+    try {
+      [IO.Directory]::CreateDirectory($TempDir) | Out-Null
+    } catch {
+      throw ("Не удалось создать временную директорию {0}: {1}" -f $TempDir, $_.Exception.Message)
+    }
+  }
+  $Script:TempBaseDir = $TempDir
+  $Script:OriginalTempEnv = [ordered]@{ TEMP = $env:TEMP; TMP = $env:TMP }
+  $Script:TempSessionDir = Join-Path $TempDir ("session_" + [Guid]::NewGuid().ToString("N"))
+  try {
+    [IO.Directory]::CreateDirectory($Script:TempSessionDir) | Out-Null
+  } catch {
+    throw ("Не удалось создать рабочую временную директорию {0}: {1}" -f $Script:TempSessionDir, $_.Exception.Message)
+  }
+  $env:TEMP = $Script:TempSessionDir
+  $env:TMP  = $Script:TempSessionDir
+  Write-Host ("Временная рабочая папка: {0}" -f $Script:TempSessionDir) -ForegroundColor DarkCyan
 
   $csvPath       = Join-Path $OutDir 'archive-audit.csv'
   $brokenLatest  = Join-Path $OutDir 'broken_latest.txt'
@@ -229,7 +280,11 @@ begin {
       }
   }
 
-  if ($targets.Count -eq 0) { Write-Host "Нечего делать: всё уже завершено или архивов нет." -ForegroundColor Green; return }
+  if ($targets.Count -eq 0) {
+    Write-Host "Нет целей: файлов для проверки не найдено." -ForegroundColor Green
+    Invoke-ArchiveAuditCleanup
+    return
+  }
 
   # ---------- Загрузка .NET-библиотеки RecursiveExtractor ----------
   $Script:RE_NS = $null
@@ -537,4 +592,5 @@ end {
       Write-Host ("Ошибки/таймауты (сессия): {0}" -f $errorsLatest) -ForegroundColor DarkYellow
     }
   }
+  Invoke-ArchiveAuditCleanup
 }

@@ -525,17 +525,16 @@ end {
   } else {
     $invokeOneFn = ${function:Invoke-One}
     $showProgressFn = ${function:Show-Progress}
-    $step = [Math]::Max(5, [int]($total/100))
-    if ($step -le 0) { $step = 1 }
+    $progressStep = [Math]::Max(5, [int]($total/100))
+    if ($progressStep -le 0) { $progressStep = 1 }
 
     $targets | ForEach-Object -Parallel {
-      param($fi, $invokeOne, $showProgress, $stepSize)
-      & $invokeOne -fi $fi
+      & $using:invokeOneFn -fi $_
       $done = [System.Threading.Interlocked]::Increment([ref]$using:processed)
-      if (($done % $stepSize) -eq 0) {
-        & $showProgress -done $done -all $using:total -elapsed $using:swAll.Elapsed
+      if (($done % $using:progressStep) -eq 0) {
+        & $using:showProgressFn -done $done -all $using:total -elapsed $using:swAll.Elapsed
       }
-    } -ThrottleLimit $Threads -ArgumentList $invokeOneFn, $showProgressFn, $step
+    } -ThrottleLimit $Threads
   }
 
   $swAll.Stop()

@@ -423,6 +423,8 @@ begin {
       $opts = if ($OptionsType) { [Activator]::CreateInstance($OptionsType) } else { $null }
       if ($opts) {
         Set-Opt $opts 'ExtractSelfOnFail' $true
+        Set-Opt $opts 'Recurse' $true
+        Set-Opt $opts 'Parallel' $false
 
         # Корректная передача паролей: Dictionary<Regex, List[string]>
         if ($pwds -and $pwds.Count -gt 0) {
@@ -439,22 +441,96 @@ begin {
 
       $entries = if ($opts) { $extractor.Extract($file, $opts) } else { $extractor.Extract($file) }
 
-      foreach ($entry in $entries) {
-        try {
-          $stream = $entry.Content
-          if ($null -eq $stream) { continue }
-          $buf = New-Object byte[] 65536
-          while (($read = $stream.Read($buf, 0, $buf.Length)) -gt 0) {
-            if ($sw.Elapsed.TotalSeconds -ge $timeoutSec) { throw [System.TimeoutException]::new("Timeout $timeoutSec s") }
+      function Format-EntryPath([object]$entryObj) {
+        if ($null -eq $entryObj) { return $top }
+        $path = $entryObj.FullPath
+        if ([string]::IsNullOrWhiteSpace($path)) {
+          if ($entryObj.PSObject.Properties['ParentPath'] -and $entryObj.ParentPath) {
+            $path = $entryObj.ParentPath
+          } elseif ($entryObj.Parent -and $entryObj.Parent.FullPath) {
+            $path = $entryObj.Parent.FullPath
+          } elseif ($entryObj.Name) {
+            $path = $entryObj.Name
           }
-          $stream.Dispose()
-        } catch {
-          $full = $entry.FullPath
-          if (-not $full) { $full = $top }
-          if ($full -and -not $full.StartsWith($top, [StringComparison]::OrdinalIgnoreCase)) { $full = "$top!$full" }
-          $msg = $_.Exception.Message -replace '[\r\n]+',' '
-          $broken.Add("$full :: $msg")
         }
+        if ([string]::IsNullOrWhiteSpace($path)) { $path = $top }
+        if ($path.StartsWith($top, [StringComparison]::OrdinalIgnoreCase)) { return $path }
+        return "$top!$path"
+      }
+
+      function Get-ErrorSummary([object]$err) {
+        if ($null -eq $err) { return "Unknown error" }
+        $parts = New-Object System.Collections.Generic.List[string]
+        $ex = $null
+        if ($err -is [System.Management.Automation.ErrorRecord]) {
+          $ex = $err.Exception
+        } elseif ($err -is [System.Exception]) {
+          $ex = $err
+        }
+        while ($ex) {
+          $msg = $ex.Message
+          if (-not [string]::IsNullOrWhiteSpace($msg)) {
+            $parts.Add(("{0}: {1}" -f $ex.GetType().Name, ($msg -replace '[\r\n]+',' ').Trim()))
+          } else {
+            $parts.Add($ex.GetType().Name)
+          }
+          $ex = $ex.InnerException
+        }
+        if ($err -is [System.Management.Automation.ErrorRecord]) {
+          $fqid = $err.FullyQualifiedErrorId
+          if (-not [string]::IsNullOrWhiteSpace($fqid)) {
+            $parts.Add("FQID: $fqid")
+          }
+        }
+        if ($parts.Count -eq 0) {
+          $txt = ($err | Out-String).Trim()
+          if ([string]::IsNullOrWhiteSpace($txt)) { return "Unknown error" }
+          return ($txt -replace '[\r\n]+',' ')
+        }
+        return ($parts -join " | ")
+      }
+
+      $entriesEnumerator = $entries.GetEnumerator()
+      $lastPath = $top
+      $enumeratorError = $null
+      try {
+        while ($true) {
+          $hasNext = $false
+          try { $hasNext = $entriesEnumerator.MoveNext() }
+          catch {
+            $enumeratorError = $_
+            break
+          }
+          if (-not $hasNext) { break }
+          $entry = $entriesEnumerator.Current
+          if ($null -eq $entry) { continue }
+          $currentPath = Format-EntryPath $entry
+          $lastPath = $currentPath
+          if ($entry.EntryStatus -and $entry.EntryStatus -ne [Microsoft.CST.RecursiveExtractor.FileEntryStatus]::Default) {
+            $broken.Add("$currentPath :: EntryStatus=$($entry.EntryStatus)")
+            continue
+          }
+          $stream = $null
+          try {
+            $stream = $entry.Content
+            if ($null -eq $stream) { continue }
+            $buf = New-Object byte[] 65536
+            while (($read = $stream.Read($buf, 0, $buf.Length)) -gt 0) {
+              if ($sw.Elapsed.TotalSeconds -ge $timeoutSec) { throw [System.TimeoutException]::new("Timeout $timeoutSec s") }
+            }
+          } catch {
+            $broken.Add("$currentPath :: " + (Get-ErrorSummary $_))
+          } finally {
+            if ($stream) {
+              try { $stream.Dispose() } catch {}
+            }
+          }
+        }
+      } finally {
+        if ($entriesEnumerator -is [System.IDisposable]) { $entriesEnumerator.Dispose() }
+      }
+      if ($enumeratorError) {
+        $broken.Add("$lastPath :: Enumerator failure: " + (Get-ErrorSummary $enumeratorError))
       }
 
       if ($broken.Count -gt 0) {
@@ -586,7 +662,8 @@ end {
     }
 
     $swAll.Stop()
-    Write-Host ("Итого: {0} архивов, за {1:hh\\:mm\\:ss}. CSV: {2}" -f $total, $swAll.Elapsed, $csvPath) -ForegroundColor Green
+    $duration = $swAll.Elapsed.ToString("hh\:mm\:ss")
+    Write-Host ("Итого: {0} архивов, за {1}. CSV: {2}" -f $total, $duration, $csvPath) -ForegroundColor Green
     Write-Host ("State per-root: {0}" -f (($rootState.Values) -join '; '))
     Write-Host ("BROKEN (последние): {0}" -f $brokenLatest)
     Write-Host ("BROKEN (все): {0}" -f $brokenAll)

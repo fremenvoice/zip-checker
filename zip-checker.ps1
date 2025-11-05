@@ -468,7 +468,7 @@ begin {
         $status = "OK"
         $detail = "verified via 7z (container)"
       } else {
-        if ($status -eq "UNAVAILABLE") { $status = "BROKEN" }
+        if ($status -ne "TIMEOUT") { $status = "BROKEN" }
         if ([string]::IsNullOrEmpty($detail)) { $detail = ($z.Err -replace '[\r\n]+',' ') }
         if (-not $chains -or $chains.Count -eq 0) { $chains = @("$topPath :: " + ($detail)) }
       }

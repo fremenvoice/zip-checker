@@ -80,10 +80,32 @@ begin {
   $roots = $roots | Sort-Object { $_.Length } -Descending -Unique
 
   $rootState = @{} # root -> .archive-audit.completed.tsv
-  foreach ($r in $roots) { $rootState[$r] = Join-Path $r '.archive-audit.completed.tsv' }
+  foreach ($r in $roots) {
+    if ([IO.Directory]::Exists($r)) {
+      $rootState[$r] = Join-Path $r '.archive-audit.completed.tsv'
+      continue
+    }
+    if ([IO.File]::Exists($r)) {
+      $rootState[$r] = $null
+      continue
+    }
+    # запасной путь: если Test-Path считает контейнером, но Should-Include говорит "архив"
+    if (Test-Path -LiteralPath $r -PathType Container) {
+      try {
+        $item = Get-Item -LiteralPath $r -ErrorAction Stop
+        if ($item -and -not $item.PSIsContainer) {
+          $rootState[$r] = $null
+          continue
+        }
+      } catch {}
+      $rootState[$r] = Join-Path $r '.archive-audit.completed.tsv'
+    } else {
+      $rootState[$r] = $null
+    }
+  }
 
-  if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
-  if (-not (Test-Path $TempDir)) { New-Item -ItemType Directory -Force -Path $TempDir | Out-Null }
+  if (-not (Test-Path -LiteralPath $OutDir)) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
+  if (-not (Test-Path -LiteralPath $TempDir)) { New-Item -ItemType Directory -Force -Path $TempDir | Out-Null }
 
   $csvPath       = Join-Path $OutDir 'archive-audit.csv'
   $brokenLatest  = Join-Path $OutDir 'broken_latest.txt'
@@ -91,13 +113,18 @@ begin {
   $errorsLatest  = Join-Path $OutDir 'errors_latest.txt'
 
   if ($Restart) {
-    foreach ($sf in $rootState.Values) { if (Test-Path $sf) { Remove-Item $sf -Force } }
-    foreach ($f in @($csvPath,$brokenLatest,$errorsLatest)) { if (Test-Path $f) { Remove-Item $f -Force } }
+    foreach ($sf in $rootState.Values) {
+      if ([string]::IsNullOrWhiteSpace($sf)) { continue }
+      if (Test-Path -LiteralPath $sf) { Remove-Item -LiteralPath $sf -Force }
+    }
+    foreach ($f in @($csvPath,$brokenLatest,$errorsLatest)) {
+      if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
+    }
   }
-  if (-not (Test-Path $csvPath)) { "TopPath,Status,Chain,Detail" | Out-File -FilePath $csvPath -Encoding UTF8 }
-  if (Test-Path $brokenLatest) { Remove-Item $brokenLatest -Force }
-  if (Test-Path $errorsLatest) { Remove-Item $errorsLatest -Force }
-  if (-not (Test-Path $brokenAll)) { New-Item -ItemType File -Path $brokenAll | Out-Null }
+  if (-not (Test-Path -LiteralPath $csvPath)) { "TopPath,Status,Chain,Detail" | Out-File -FilePath $csvPath -Encoding UTF8 }
+  if (Test-Path -LiteralPath $brokenLatest) { Remove-Item -LiteralPath $brokenLatest -Force }
+  if (Test-Path -LiteralPath $errorsLatest) { Remove-Item -LiteralPath $errorsLatest -Force }
+  if (-not (Test-Path -LiteralPath $brokenAll)) { New-Item -ItemType File -Path $brokenAll | Out-Null }
 
   # ---------- 7-Zip fallback ----------
   function Find-7z {
@@ -148,7 +175,8 @@ begin {
   # ---------- per-root Completed Set ----------
   function Load-CompletedSet([string]$stateFile) {
     $set = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    if (-not (Test-Path $stateFile)) { return $set }
+    if ([string]::IsNullOrWhiteSpace($stateFile)) { return $set }
+    if (-not (Test-Path -LiteralPath $stateFile)) { return $set }
     try {
       Get-Content -LiteralPath $stateFile -Encoding UTF8 | ForEach-Object {
         if ([string]::IsNullOrWhiteSpace($_)) { return }
@@ -206,6 +234,10 @@ begin {
 
     function Find-RE-Cands {
       $out = @()
+      $dllNamePred = {
+        $_.Name -like 'Microsoft.CST*.RecursiveExtractor.dll' -or
+        $_.Name -ieq 'RecursiveExtractor.dll'
+      }
 
       # 1) Уже в памяти?
       try { $null = [Microsoft.CST.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.RecursiveExtractor'; return @() } catch {}
@@ -215,14 +247,16 @@ begin {
       $toolExe = Join-Path $env:USERPROFILE ".dotnet\tools\recursiveextractor.exe"
       if (Test-Path $toolExe) {
         $toolDir = Split-Path -Parent $toolExe
-        $out += Get-ChildItem -Path $toolDir -Recurse -Filter "Microsoft.CST*.RecursiveExtractor.dll" -ErrorAction SilentlyContinue |
+        $out += Get-ChildItem -Path $toolDir -Recurse -File -ErrorAction SilentlyContinue |
+          Where-Object $dllNamePred |
           Select-Object -ExpandProperty DirectoryName -Unique
       }
 
       # 3) store CLI
       $storeRoot = Join-Path $env:USERPROFILE ".dotnet\tools\.store\microsoft.cst.recursiveextractor.cli"
       if (Test-Path $storeRoot) {
-        $out += Get-ChildItem -Path $storeRoot -Recurse -Filter "Microsoft.CST*.RecursiveExtractor.dll" -ErrorAction SilentlyContinue |
+        $out += Get-ChildItem -Path $storeRoot -Recurse -File -ErrorAction SilentlyContinue |
+          Where-Object $dllNamePred |
           Select-Object -ExpandProperty DirectoryName -Unique
       }
 
@@ -230,7 +264,8 @@ begin {
       foreach ($pkg in @("microsoft.cst.recursiveextractor","microsoft.cst.recursiveextractor.cli")) {
         $nugetRoot = Join-Path $env:USERPROFILE (".nuget\packages\{0}" -f $pkg)
         if (Test-Path $nugetRoot) {
-          $out += Get-ChildItem -Path $nugetRoot -Recurse -Filter "Microsoft.CST*.RecursiveExtractor.dll" -ErrorAction SilentlyContinue |
+          $out += Get-ChildItem -Path $nugetRoot -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object $dllNamePred |
             Select-Object -ExpandProperty DirectoryName -Unique
         }
       }

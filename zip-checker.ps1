@@ -523,18 +523,17 @@ end {
       if (($done % [Math]::Max(1, [int]($total/100))) -eq 0) { Show-Progress -done $done -all $total -elapsed $swAll.Elapsed }
     }
   } else {
-    $invokeOneFn = ${function:Invoke-One}
-    $showProgressFn = ${function:Show-Progress}
     $progressStep = [Math]::Max(5, [int]($total/100))
     if ($progressStep -le 0) { $progressStep = 1 }
 
     $targets | ForEach-Object -Parallel {
-      & $using:invokeOneFn -fi $_
+      param($step)
+      Invoke-One -fi $_
       $done = [System.Threading.Interlocked]::Increment([ref]$using:processed)
-      if (($done % $using:progressStep) -eq 0) {
-        & $using:showProgressFn -done $done -all $using:total -elapsed $using:swAll.Elapsed
+      if (($done % $step) -eq 0) {
+        Show-Progress -done $done -all $using:total -elapsed $using:swAll.Elapsed
       }
-    } -ThrottleLimit $Threads
+    } -ThrottleLimit $Threads -ArgumentList $progressStep
   }
 
   $swAll.Stop()

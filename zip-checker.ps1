@@ -17,19 +17,9 @@
 .PARAMETER PerFileTimeoutSec
   Таймаут на проверку одного архива (по умолчанию 1800 сек).
 .PARAMETER Restart
-  [Alias: --restart] Очистить per-root state и начать заново (CSV и broken_latest/errors_latest — заново).
+  Очистить per-root state и начать заново (CSV и broken_latest/errors_latest — заново).
 .PARAMETER Passwords
   Список паролей для проверки защищённых контейнеров (zip/7z/rar4).
-.EXAMPLE
-  .\Test-Archives.ps1 -Path "S:\recover\SupportExternalFile","T:\" -OutDir "S:\audit" -Threads 16
-
-.EXAMPLE
-  # Возобновление после сбоя — пропустит всё, что завершилось в прошлый раз
-  .\Test-Archives.ps1 -Path "S:\recover\SupportExternalFile","T:\" -OutDir "S:\audit"
-
-.EXAMPLE
-  # С нуля
-  .\Test-Archives.ps1 -Path "S:\recover\SupportExternalFile","T:\" -OutDir "S:\audit" -Restart
 #>
 [CmdletBinding()]
 param(
@@ -39,18 +29,28 @@ param(
   [string]$TempDir = (Join-Path $env:TEMP "ArchiveAudit"),
   [int]$Threads = [Math]::Max(1, [Environment]::ProcessorCount),
   [int]$PerFileTimeoutSec = 1800,
-  [Alias('restart')]
   [switch]$Restart,
   [string[]]$Passwords
 )
 
 begin {
   $ErrorActionPreference = 'Stop'
-  $PSStyle.OutputRendering = 'PlainText'
+  try { $PSStyle.OutputRendering = 'PlainText' } catch {}
+
+  # Подсказка, если запущено в Windows PowerShell 5.1 (Desktop)
+  try {
+    if ($PSVersionTable.PSEdition -ne 'Core') {
+      Write-Warning "Рекомендуется PowerShell 7+ (Core): Windows PowerShell 5.1 не загрузит .NET-библиотеку; будет использоваться fallback 7-Zip."
+    }
+  } catch {}
 
   # ---------- Форматы / многотомники ----------
-  $supportedExt = @('.zip','.7z','.rar','.tar','.tgz','.tar.gz','.txz','.tar.xz','.tbz2','.tar.bz2',
-                    '.iso','.vhd','.vhdx','.vmdk','.wim','.deb','.ar','.dmg','.gzip','.bzip2','.xzip')
+  $supportedExt = @(
+    '.zip','.7z','.rar',
+    '.tar','.tgz','.tar.gz','.txz','.tar.xz','.tbz2','.tar.bz2',
+    '.iso','.vhd','.vhdx','.vmdk','.wim','.deb','.ar','.dmg',
+    '.gz','.bz2','.xz'
+  )
   function Should-Include([IO.FileInfo]$fi) {
     $n = $fi.Name.ToLowerInvariant()
     $ext = $fi.Extension.ToLowerInvariant()
@@ -116,7 +116,8 @@ begin {
     if (-not (Test-Path $exe)) { return @{ Exit = 127; Err = "7z not found" } }
     $psi = [System.Diagnostics.ProcessStartInfo]::new()
     $psi.FileName = $exe
-    $psi.Arguments = "t `"$file`" -bso0 -bsp0 -bse0"
+    # не глушим stderr, чтобы получить текст ошибки
+    $psi.Arguments = "t `"$file`" -bso0 -bsp0"
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
     $p = [System.Diagnostics.Process]::Start($psi)
@@ -133,7 +134,7 @@ begin {
     try { ($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes($s)) | ForEach-Object { $_.ToString("x2") }) -join '' } finally { $md5.Dispose() }
   }
   function Get-NamedMutex([string]$path) {
-    $name = "Global\ArchiveAudit_" + (Get-MD5Hex $path)
+    $name = "ArchiveAudit_" + (Get-MD5Hex $path)    # локальный именованный mutex
     $createdNew = $false
     return [System.Threading.Mutex]::new($false, $name, [ref]$createdNew)
   }
@@ -163,7 +164,7 @@ begin {
         if ($okLen -and $okTs) { $null = $set.Add($fi.FullName) }
       }
     } catch {
-      Write-Warning "Ошибка чтения state $stateFile: $($_.Exception.Message)"
+      Write-Warning ("Ошибка чтения state {0}: {1}" -f $stateFile, $_.Exception.Message)
     }
     return $set
   }
@@ -202,46 +203,68 @@ begin {
   $Script:REAsmDir = $null
 
   function Ensure-RELibrary {
-    # Уже загружено?
-    try { $null = [Microsoft.CST.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.RecursiveExtractor'; return $true } catch {}
-    try { $null = [Microsoft.CST.OpenSource.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.OpenSource.RecursiveExtractor'; return $true } catch {}
 
-    # Попробуем гарантировать установку dotnet-tool (CLI), из которого возьмём DLL
-    try {
-      $list = (& dotnet tool list -g) 2>$null | Out-String
-      if ($null -eq ($list | Select-String 'Microsoft.CST.RecursiveExtractor.Cli')) {
-        Write-Host "Устанавливаю Microsoft.CST.RecursiveExtractor.Cli…" -ForegroundColor Yellow
-        & dotnet tool install -g Microsoft.CST.RecursiveExtractor.Cli | Out-Null
+    function Find-RE-Cands {
+      $out = @()
+
+      # 1) Уже в памяти?
+      try { $null = [Microsoft.CST.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.RecursiveExtractor'; return @() } catch {}
+      try { $null = [Microsoft.CST.OpenSource.RecursiveExtractor.Extractor]; $Script:RE_NS = 'Microsoft.CST.OpenSource.RecursiveExtractor'; return @() } catch {}
+
+      # 2) Рядом с глобальным tool'ом
+      $toolExe = Join-Path $env:USERPROFILE ".dotnet\tools\recursiveextractor.exe"
+      if (Test-Path $toolExe) {
+        $toolDir = Split-Path -Parent $toolExe
+        $out += Get-ChildItem -Path $toolDir -Recurse -Filter "Microsoft.CST*.RecursiveExtractor.dll" -ErrorAction SilentlyContinue |
+          Select-Object -ExpandProperty DirectoryName -Unique
       }
-    } catch {
-      Write-Warning "Не удалось установить dotnet-tool: $($_.Exception.Message)"
+
+      # 3) store CLI
+      $storeRoot = Join-Path $env:USERPROFILE ".dotnet\tools\.store\microsoft.cst.recursiveextractor.cli"
+      if (Test-Path $storeRoot) {
+        $out += Get-ChildItem -Path $storeRoot -Recurse -Filter "Microsoft.CST*.RecursiveExtractor.dll" -ErrorAction SilentlyContinue |
+          Select-Object -ExpandProperty DirectoryName -Unique
+      }
+
+      # 4) nuget пакеты
+      foreach ($pkg in @("microsoft.cst.recursiveextractor","microsoft.cst.recursiveextractor.cli")) {
+        $nugetRoot = Join-Path $env:USERPROFILE (".nuget\packages\{0}" -f $pkg)
+        if (Test-Path $nugetRoot) {
+          $out += Get-ChildItem -Path $nugetRoot -Recurse -Filter "Microsoft.CST*.RecursiveExtractor.dll" -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty DirectoryName -Unique
+        }
+      }
+      return $out | Select-Object -Unique
     }
 
-    # Ищем DLL в .store tool'а и в .nuget\packages
-    $cands = @()
-    $storeRoot = Join-Path $env:USERPROFILE ".dotnet\tools\.store\microsoft.cst.recursiveextractor.cli"
-    if (Test-Path $storeRoot) {
-      $cands += Get-ChildItem -Path $storeRoot -Recurse -Filter "Microsoft.CST.RecursiveExtractor.dll" -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty DirectoryName -Unique
+    $cands = Find-RE-Cands
+    if ($cands.Count -eq 0) {
+      try {
+        $list = (& dotnet tool list -g) 2>$null | Out-String
+        if ($null -eq ($list | Select-String 'Microsoft.CST.RecursiveExtractor.Cli')) {
+          Write-Host "Устанавливаю Microsoft.CST.RecursiveExtractor.Cli…" -ForegroundColor Yellow
+          & dotnet tool install -g Microsoft.CST.RecursiveExtractor.Cli | Out-Null
+        }
+      } catch {
+        Write-Warning "Не удалось установить dotnet-tool: $($_.Exception.Message)"
+      }
+      $cands = Find-RE-Cands
+      if ($cands.Count -eq 0) { return $false }
     }
-    $nugetRoot = Join-Path $env:USERPROFILE ".nuget\packages\microsoft.cst.recursiveextractor"
-    if (Test-Path $nugetRoot) {
-      $cands += Get-ChildItem -Path $nugetRoot -Recurse -Filter "Microsoft.CST.RecursiveExtractor.dll" -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty DirectoryName -Unique
-    }
-    if (-not $cands -or $cands.Count -eq 0) { return $false }
 
     $dir = ($cands | Sort-Object { $_.Length } -Descending | Select-Object -First 1)
     $Script:REAsmDir = $dir
 
-    # Резолвер для зависимостей из той же папки
-    [System.Runtime.Loader.AssemblyLoadContext]::Default.add_Resolving({
-      param($context, $name)
-      if ([string]::IsNullOrEmpty($Script:REAsmDir)) { return $null }
-      $candidate = Join-Path $Script:REAsmDir ($name.Name + '.dll')
-      if (Test-Path $candidate) { return $context.LoadFromAssemblyPath($candidate) }
-      return $null
-    }) | Out-Null
+    # Резолвер зависимостей (если доступен)
+    try {
+      [System.Runtime.Loader.AssemblyLoadContext]::Default.add_Resolving({
+        param($context, $name)
+        if ([string]::IsNullOrEmpty($Script:REAsmDir)) { return $null }
+        $candidate = Join-Path $Script:REAsmDir ($name.Name + '.dll')
+        if (Test-Path $candidate) { return $context.LoadFromAssemblyPath($candidate) }
+        return $null
+      }) | Out-Null
+    } catch {}
 
     # Предзагрузка всех .dll
     Get-ChildItem -LiteralPath $dir -Filter *.dll -ErrorAction SilentlyContinue | ForEach-Object {
@@ -254,7 +277,8 @@ begin {
     return $false
   }
 
-  $REAvailable = Ensure-RELibrary
+  $REAvailable = $false
+  try { $REAvailable = Ensure-RELibrary } catch { $REAvailable = $false }
   if ($REAvailable) { Write-Host "RecursiveExtractor .NET библиотека загружена: $RE_NS (из $REAsmDir)" -ForegroundColor Cyan }
   else { Write-Host "Не удалось загрузить библиотеку RecursiveExtractor — будет больше fallback'ов." -ForegroundColor DarkYellow }
 
@@ -267,7 +291,6 @@ begin {
     $top = $file
     $broken = New-Object System.Collections.Generic.List[string]
 
-    # Хелпер для безопасной установки опций (маски версии API)
     function Set-Opt($obj, $name, $value) {
       $prop = $obj.GetType().GetProperty($name)
       if ($prop -and $prop.CanWrite) { $prop.SetValue($obj, $value) }
@@ -283,27 +306,34 @@ begin {
       $opts = if ($OptionsType) { [Activator]::CreateInstance($OptionsType) } else { $null }
       if ($opts) {
         Set-Opt $opts 'ExtractSelfOnFail' $true
-        Set-Opt $opts 'Parallel' $false
-        if ($pwds) { Set-Opt $opts 'Passwords' ([string[]]$pwds) }
+
+        # Корректная передача паролей: Dictionary<Regex, List[string]>
+        if ($pwds -and $pwds.Count -gt 0) {
+          $DictType = [type]'System.Collections.Generic.Dictionary[System.Text.RegularExpressions.Regex,System.Collections.Generic.List[string]]'
+          $ListType = [type]'System.Collections.Generic.List[string]'
+          $pwdDict  = [Activator]::CreateInstance($DictType)
+          $pwdList  = [Activator]::CreateInstance($ListType, @())
+          foreach ($p in $pwds) { $null = $pwdList.Add($p) }
+          $anyRegex = [System.Text.RegularExpressions.Regex]::new('.*')
+          $pwdDict.Add($anyRegex, $pwdList)
+          Set-Opt $opts 'Passwords' $pwdDict
+        }
       }
 
-      # Получаем перечисление FileEntry
       $entries = if ($opts) { $extractor.Extract($file, $opts) } else { $extractor.Extract($file) }
 
       foreach ($entry in $entries) {
         try {
-          # Верификация: читаем весь Stream, с контролем таймаута
           $stream = $entry.Content
+          if ($null -eq $stream) { continue }
           $buf = New-Object byte[] 65536
           while (($read = $stream.Read($buf, 0, $buf.Length)) -gt 0) {
             if ($sw.Elapsed.TotalSeconds -ge $timeoutSec) { throw [System.TimeoutException]::new("Timeout $timeoutSec s") }
           }
           $stream.Dispose()
         } catch {
-          # Цепочка вложений:
           $full = $entry.FullPath
-          if (-not $full) { $full = $top } # защитный случай
-          # Нормализация: если цепочка не начинается с top, добавим top как префикс
+          if (-not $full) { $full = $top }
           if ($full -and -not $full.StartsWith($top, [StringComparison]::OrdinalIgnoreCase)) { $full = "$top!$full" }
           $msg = $_.Exception.Message -replace '[\r\n]+',' '
           $broken.Add("$full :: $msg")
@@ -345,52 +375,36 @@ begin {
     Write-Host ("[{0}%] {1}/{2} | ETA {3}s" -f $pct, $done, $all, $etaSec)
   }
 
-  # ---------- сборка меты для CSV ----------
   function CsvEsc([string]$s) { if ($null -eq $s) { return "" } return $s.Replace('"','""') }
-}
 
-process {}
-
-end {
-  Write-Host ("Найдено архивов к проверке: {0}" -f $targets.Count) -ForegroundColor Cyan
-
-  $po = [System.Threading.Tasks.ParallelOptions]::new()
-  $po.MaxDegreeOfParallelism = $Threads
-
-  $total = $targets.Count
-  $processed = 0
-  $swAll = [System.Diagnostics.Stopwatch]::StartNew()
-
-  [System.Threading.Tasks.Parallel]::ForEach($targets, $po, {
-    param($fi)
-
+  # ---------- тело одной обработки ----------
+  function Invoke-One([System.IO.FileInfo]$fi) {
     $topPath = $fi.FullName
     $root = Get-RootFor $topPath
     $stateFile = if ($root) { $rootState[$root] } else { $null }
 
-    # 1) Основной тест: библиотека (глубокая верификация)
+    # 1) Основной тест
     $res = Test-ArchiveDeep-Lib -file $topPath -timeoutSec $PerFileTimeoutSec -pwds $Passwords
-
     $status = $res.Status
     $detail = $res.Detail
     $chains = @()
     if ($res.BrokenChains) { $chains = $res.BrokenChains }
 
-    # 2) Fallback: 7z t — если ERROR/TIMEOUT или вообще нет библиотеки
+    # 2) Fallback: 7z t
     if ( ($status -eq "ERROR" -or $status -eq "TIMEOUT" -or $status -eq "UNAVAILABLE") -and $Use7z ) {
-      $z = Invoke-7zTest -exe $SevenZip -file $topPath -timeoutSec [Math]::Min($PerFileTimeoutSec, 1200)
+      $to = [Math]::Min($PerFileTimeoutSec, 1200)           # ← исключаем парсерные косяки
+      $z = Invoke-7zTest -exe $SevenZip -file $topPath -timeoutSec $to
       if ($z.Exit -eq 0) {
-        # Контейнер цел (вложений не знаем) — считаем OK(via 7z)
         $status = "OK"
         $detail = "verified via 7z (container)"
       } else {
-        if ($status -eq "UNAVAILABLE") { $status = "BROKEN" } # лучший из вариантов
-        $detail = if ($detail) { $detail } else { $z.Err -replace '[\r\n]+',' ' }
-        if (-not $chains -or $chains.Count -eq 0) { $chains = @("$topPath :: " + ($detail ?? "7z failed")) }
+        if ($status -eq "UNAVAILABLE") { $status = "BROKEN" }
+        if ([string]::IsNullOrEmpty($detail)) { $detail = ($z.Err -replace '[\r\n]+',' ') }
+        if (-not $chains -or $chains.Count -eq 0) { $chains = @("$topPath :: " + ($detail)) }
       }
     }
 
-    # 3) CSV-запись
+    # 3) CSV
     if ($status -eq "BROKEN" -and $chains.Count -gt 0) {
       foreach ($ch in $chains) {
         $line = ('"{0}","{1}","{2}","{3}"' -f (CsvEsc $topPath), 'BROKEN', (CsvEsc $ch), (CsvEsc $detail))
@@ -414,21 +428,50 @@ end {
       }
     }
 
-    # 5) Состояние (только финал → state)
+    # 5) State
     if ($stateFile -and ($status -eq 'OK' -or $status -eq 'BROKEN')) {
       $line = ('{0}' + "`t" + '{1}' + "`t" + '{2}' + "`t" + '{3}') -f $status, $topPath, $fi.Length, $fi.LastWriteTimeUtc.ToString("o")
       Append-LineSafe -filePath $stateFile -line $line
     }
 
     if ($status -ne 'OK' -and $status -ne 'BROKEN') {
-      Append-LineSafe -filePath $errorsLatest -line ($topPath + "`t" + ($detail ?? $status))
+      $errDetail = if ([string]::IsNullOrEmpty($detail)) { $status } else { $detail }
+      Append-LineSafe -filePath $errorsLatest -line ($topPath + "`t" + $errDetail)
+    }
+  }
+}
+
+process {}
+
+end {
+  Write-Host ("Найдено архивов к проверке: {0}" -f $targets.Count) -ForegroundColor Cyan
+
+  $total = $targets.Count
+  [int]$processed = 0
+  $swAll = [System.Diagnostics.Stopwatch]::StartNew()
+
+  if ($Threads -le 1 -or $total -le 1) {
+    foreach ($fi in $targets) {
+      Invoke-One -fi $fi
+      $done = [System.Threading.Interlocked]::Increment([ref]$processed)
+      if (($done % [Math]::Max(1, [int]($total/100))) -eq 0) { Show-Progress -done $done -all $total -elapsed $swAll.Elapsed }
+    }
+  } else {
+    $po = [System.Threading.Tasks.ParallelOptions]::new()
+    $po.MaxDegreeOfParallelism = $Threads
+
+    $action = [System.Action[System.IO.FileInfo]]{
+      param([System.IO.FileInfo]$fi)
+      Invoke-One -fi $fi
+      [System.Threading.Interlocked]::Increment([ref]$using:processed) | Out-Null
+      if (($using:processed % [Math]::Max(5, [int]($using:total/100))) -eq 0) {
+        Show-Progress -done $using:processed -all $using:total -elapsed $using:swAll.Elapsed
+      }
     }
 
-    $done = [System.Threading.Interlocked]::Increment([ref]$processed)
-    if (($done % [Math]::Max(5, [int]($total/100))) -eq 0) {
-      Show-Progress -done $done -all $total -elapsed $swAll.Elapsed
-    }
-  })
+    $targetsEnum = [System.Collections.Generic.IEnumerable[System.IO.FileInfo]]$targets
+    [System.Threading.Tasks.Parallel]::ForEach($targetsEnum, $po, $action)
+  }
 
   $swAll.Stop()
   Write-Host ("Готово: {0} файлов, за {1:hh\:mm\:ss}. CSV: {2}" -f $total, $swAll.Elapsed, $csvPath) -ForegroundColor Green
@@ -440,11 +483,4 @@ end {
       Write-Host ("Ошибки/таймауты (сессия): {0}" -f $errorsLatest) -ForegroundColor DarkYellow
     }
   }
-
-  <#
-  ПРИМЕРЫ:
-    .\Test-Archives.ps1 -Path "S:\recover\SupportExternalFile","T:\" -OutDir "S:\audit" -Threads 16
-    .\Test-Archives.ps1 -Path "S:\recover\SupportExternalFile","T:\" -OutDir "S:\audit" -Restart
-    .\Test-Archives.ps1 -Path "T:\some.zip" -OutDir "S:\audit" -Passwords "secret1","secret2"
-  #>
 }

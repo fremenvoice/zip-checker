@@ -450,6 +450,7 @@ begin {
   # ---------- тело одной обработки ----------
   function Invoke-One([System.IO.FileInfo]$fi) {
     $topPath = $fi.FullName
+    Write-Host ("-> {0}" -f $topPath)
     $root = Get-RootFor $topPath
     $stateFile = if ($root) { $rootState[$root] } else { $null }
 
@@ -475,6 +476,12 @@ begin {
     }
 
     # 3) CSV
+    if ($chains.Count -gt 0) {
+      $hash = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+      $dedup = New-Object System.Collections.Generic.List[string]
+      foreach ($ch in $chains) { if ($hash.Add($ch)) { [void]$dedup.Add($ch) } }
+      $chains = $dedup.ToArray()
+    }
     if ($status -eq "BROKEN" -and $chains.Count -gt 0) {
       foreach ($ch in $chains) {
         $line = ('"{0}","{1}","{2}","{3}"' -f (CsvEsc $topPath), 'BROKEN', (CsvEsc $ch), (CsvEsc $detail))

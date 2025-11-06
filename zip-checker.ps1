@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Глубокая проверка целостности архивов и вложенных архивов (resume-safe).
 .DESCRIPTION
@@ -62,6 +62,13 @@ begin {
 
     $ErrorActionPreference = 'Stop'
     try { $PSStyle.OutputRendering = 'PlainText' } catch {}
+
+    try {
+      $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
+      if ($currentProcess) {
+        $currentProcess.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
+      }
+    } catch {}
 
   # Подсказка, если запущено в Windows PowerShell 5.1 (Desktop)
   try {
@@ -175,7 +182,10 @@ begin {
       if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
     }
   }
-  if (-not (Test-Path -LiteralPath $csvPath)) { "Путь (topPath),Статус (status),Цепочка (chain),Описание (detail)" | Out-File -FilePath $csvPath -Encoding UTF8 }
+  if (-not (Test-Path -LiteralPath $csvPath)) {
+    $header = "Путь (topPath),Статус (status),Цепочка (chain),Описание (detail)"
+    [System.IO.File]::WriteAllText($csvPath, $header + [Environment]::NewLine, [System.Text.UTF8Encoding]::new($true))
+  }
   if (Test-Path -LiteralPath $brokenLatest) { Remove-Item -LiteralPath $brokenLatest -Force }
   if (Test-Path -LiteralPath $errorsLatest) { Remove-Item -LiteralPath $errorsLatest -Force }
   if (-not (Test-Path -LiteralPath $brokenAll)) { New-Item -ItemType File -Path $brokenAll | Out-Null }
@@ -204,6 +214,7 @@ begin {
     $p = $null
     try {
       $p = [System.Diagnostics.Process]::Start($psi)
+      try { $p.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch {}
     } catch {
       $errMsg = $_.Exception.Message -replace '[\r\n]+', ' '
       return @{ Exit = 125; Err = "7z launch failed: $errMsg" }
@@ -230,8 +241,16 @@ begin {
   function Append-LineSafe([string]$filePath, [string]$line) {
     $mtx = Get-NamedMutex $filePath
     $mtx.WaitOne() | Out-Null
-    try { Add-Content -Path $filePath -Value $line -Encoding UTF8 }
-    finally { $mtx.ReleaseMutex() | Out-Null; $mtx.Dispose() }
+    try {
+      $encoding = [System.Text.UTF8Encoding]::new($true) # keep UTF-8 with BOM for new files
+      $writer = [System.IO.StreamWriter]::new($filePath, $true, $encoding)
+      try { $writer.WriteLine($line) }
+      finally { $writer.Dispose() }
+    }
+    finally {
+      $mtx.ReleaseMutex() | Out-Null
+      $mtx.Dispose()
+    }
   }
 
   # ---------- per-root Completed Set ----------

@@ -175,7 +175,7 @@ begin {
       if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force }
     }
   }
-  if (-not (Test-Path -LiteralPath $csvPath)) { "TopPath,Status,Chain,Detail" | Out-File -FilePath $csvPath -Encoding UTF8 }
+  if (-not (Test-Path -LiteralPath $csvPath)) { "Путь (topPath),Статус (status),Цепочка (chain),Описание (detail)" | Out-File -FilePath $csvPath -Encoding UTF8 }
   if (Test-Path -LiteralPath $brokenLatest) { Remove-Item -LiteralPath $brokenLatest -Force }
   if (Test-Path -LiteralPath $errorsLatest) { Remove-Item -LiteralPath $errorsLatest -Force }
   if (-not (Test-Path -LiteralPath $brokenAll)) { New-Item -ItemType File -Path $brokenAll | Out-Null }
@@ -408,13 +408,17 @@ begin {
   else { Write-Host "Не удалось загрузить библиотеку RecursiveExtractor — будет больше fallback'ов." -ForegroundColor DarkYellow }
 
   # ---------- Проверка одной записи через библиотеку ----------
-  function Test-ArchiveDeep-Lib([string]$file, [int]$timeoutSec, [string[]]$pwds) {
-    $result = [ordered]@{ Status=""; Detail=""; BrokenChains=@() }
-    if (-not $REAvailable) { $result.Status = "UNAVAILABLE"; $result.Detail = "Library not available"; return $result }
+    function Test-ArchiveDeep-Lib([string]$file, [int]$timeoutSec, [string[]]$pwds) {
+    $result = [ordered]@{ Status=""; Detail=""; BrokenChains=@(); BrokenItems=@() }
+    if (-not $REAvailable) {
+      $result.Status = "UNAVAILABLE"
+      $result.Detail = "Библиотека RecursiveExtractor недоступна (unavailable)"
+      return $result
+    }
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $top = $file
-    $broken = New-Object System.Collections.Generic.List[string]
+    $broken = New-Object System.Collections.Generic.List[object]
 
     function Set-Opt($obj, $name, $value) {
       $prop = $obj.GetType().GetProperty($name)
@@ -434,7 +438,7 @@ begin {
         Set-Opt $opts 'Recurse' $true
         Set-Opt $opts 'Parallel' $false
 
-        # Корректная передача паролей: Dictionary<Regex, List[string]>
+        # ���४⭠� ��।�� ��஫��: Dictionary<Regex, List[string]>
         if ($pwds -and $pwds.Count -gt 0) {
           $DictType = [type]'System.Collections.Generic.Dictionary[System.Text.RegularExpressions.Regex,System.Collections.Generic.List[string]]'
           $ListType = [type]'System.Collections.Generic.List[string]'
@@ -498,7 +502,16 @@ begin {
         return ($parts -join " | ")
       }
 
-      $entriesEnumerator = $entries.GetEnumerator()
+      $entriesEnumerator = $null
+      $enumerableCandidate = $entries -as [System.Collections.IEnumerable]
+      if ($enumerableCandidate -and -not ($entries -is [string])) {
+        $entriesEnumerator = $enumerableCandidate.GetEnumerator()
+      } elseif ($null -ne $entries) {
+        $entriesEnumerator = (,@($entries)).GetEnumerator()
+      } else {
+        $entriesEnumerator = @().GetEnumerator()
+      }
+
       $lastPath = $top
       $enumeratorError = $null
       try {
@@ -521,7 +534,8 @@ begin {
             if ($skipStream) {
               try { $skipStream.Dispose() } catch {}
             }
-            $broken.Add("$currentPath :: EntryStatus=$($entry.EntryStatus)")
+            $entryStatusInfo = Get-EntryStatusReason ($entry.EntryStatus.ToString()) $currentPath
+            $broken.Add((New-BrokenItem -Path $currentPath -ReasonKey $entryStatusInfo.Key -Message $entryStatusInfo.Message))
             continue
           }
           $stream = $null
@@ -533,7 +547,8 @@ begin {
               if ($sw.Elapsed.TotalSeconds -ge $timeoutSec) { throw [System.TimeoutException]::new("Timeout $timeoutSec s") }
             }
           } catch {
-            $broken.Add("$currentPath :: " + (Get-ErrorSummary $_))
+            $errorInfo = Get-LocalizedErrorInfo (Get-ErrorSummary $_)
+            $broken.Add((New-BrokenItem -Path $currentPath -ReasonKey $errorInfo.Key -Message $errorInfo.Message))
           } finally {
             if ($stream) {
               try { $stream.Dispose() } catch {}
@@ -541,38 +556,53 @@ begin {
           }
         }
       } finally {
-        if ($entriesEnumerator -is [System.IDisposable]) { $entriesEnumerator.Dispose() }
+        if ($entriesEnumerator -and ($entriesEnumerator -is [System.IDisposable])) { $entriesEnumerator.Dispose() }
       }
       if ($enumeratorError) {
-        $broken.Add("$lastPath :: Enumerator failure: " + (Get-ErrorSummary $enumeratorError))
+        $enumeratorInfo = Get-LocalizedErrorInfo (Get-ErrorSummary $enumeratorError)
+        $msg = 'Сбой перечисления вложений (fileEntry)'
+        if ($enumeratorInfo.Key -ne 'fileEntry') {
+          $msg += ": " + $enumeratorInfo.Message
+        }
+        $broken.Add((New-BrokenItem -Path $lastPath -ReasonKey 'fileEntry' -Message $msg))
       }
 
       if ($broken.Count -gt 0) {
+        $items = $broken.ToArray()
         $result.Status = "BROKEN"
-        $result.BrokenChains = $broken.ToArray()
-        $result.Detail = "Broken entries: " + $broken.Count
+        $result.BrokenItems = $items
+        $result.BrokenChains = $items | ForEach-Object { "{0} :: {1}" -f $_.Path, $_.Message }
+        $result.Detail = Get-BrokenDetailSummary $items
       } else {
         $result.Status = "OK"
+        $result.Detail = ""
       }
     }
     catch [System.OverflowException] {
       $result.Status = "BROKEN"
-      $result.Detail = "Zip bomb / Quine detected: " + ($_.Exception.Message -replace '[\r\n]+',' ')
-      $result.BrokenChains = @("$top :: ZipBomb/Quine")
+      $message = "Обнаружена zip-бомба (zipBomb)"
+      if ($_.Exception -and $_.Exception.Message) {
+        $message += ": " + ($_.Exception.Message -replace '[\r\n]+',' ').Trim()
+      }
+      $item = New-BrokenItem -Path $top -ReasonKey 'zipBomb' -Message $message
+      $result.BrokenItems = @($item)
+      $result.BrokenChains = @("{0} :: {1}" -f $item.Path, $item.Message)
+      $result.Detail = $message
     }
     catch [System.TimeoutException] {
       $result.Status = "TIMEOUT"
-      $result.Detail = "Timeout $timeoutSec s"
+      $result.Detail = "Превышено время ожидания $timeoutSec с (timeout)"
     }
     catch {
       $result.Status = "ERROR"
-      $result.Detail = $_.Exception.Message -replace '[\r\n]+',' '
+      $errorText = if ($_.Exception) { $_.Exception.Message } else { ($_ | Out-String) }
+      $errorInfo = Get-LocalizedErrorInfo $errorText
+      $result.Detail = $errorInfo.Message
     }
     finally { $sw.Stop() }
 
     return $result
   }
-
   # ---------- прогресс ----------
   function Show-Progress([int]$done, [int]$all, [TimeSpan]$elapsed) {
     if ($done -lt 1) { return }
@@ -583,6 +613,93 @@ begin {
   }
 
   function CsvEsc([string]$s) { if ($null -eq $s) { return "" } return $s.Replace('"','""') }
+
+  $Script:StatusLabels = @{
+    OK           = 'Исправен (ok)'
+    BROKEN       = 'Повреждён (broken)'
+    ERROR        = 'Ошибка (error)'
+    TIMEOUT      = 'Тайм-аут (timeout)'
+    UNAVAILABLE  = 'Библиотека недоступна (unavailable)'
+  }
+
+  $Script:ErrorSummaryPatterns = @(
+    @{ Pattern = 'Failed to locate the Zip Header'; Key = 'brokenZipHeader'; Message = 'Повреждённый заголовок ZIP (brokenZipHeader)' },
+    @{ Pattern = 'does not contain a method named ''GetEnumerator'''; Key = 'fileEntry'; Message = 'Сбой перечисления вложений (fileEntry)' },
+    @{ Pattern = 'System\.OutOfMemoryException'; Key = 'outOfMemory'; Message = 'Недостаточно памяти при проверке (outOfMemory)' }
+  )
+
+  function Get-LocalizedStatus([string]$status) {
+    if ([string]::IsNullOrWhiteSpace($status)) { return "" }
+    if ($Script:StatusLabels.ContainsKey($status)) { return $Script:StatusLabels[$status] }
+    return ("{0} (raw)" -f $status)
+  }
+
+  function Test-IsTarLikePath([string]$path) {
+    if ([string]::IsNullOrWhiteSpace($path)) { return $false }
+    $low = $path.ToLowerInvariant()
+    foreach ($suffix in @('.tar','.tar.gz','.tgz','.tar.bz2','.tbz2','.tar.xz','.txz')) {
+      if ($low.EndsWith($suffix)) { return $true }
+    }
+    return $false
+  }
+
+  function Get-EntryStatusReason([string]$statusName, [string]$path) {
+    if ([string]::IsNullOrWhiteSpace($statusName)) {
+      return @{ Key = 'entryStatus'; Message = 'Неизвестный статус записи (entryStatus)' }
+    }
+    switch ($statusName) {
+      'EncryptedArchive' { return @{ Key = 'encryptedArchive'; Message = 'Зашифрованный вложенный архив (encryptedArchive)' } }
+      'FailedArchive' {
+        if (Test-IsTarLikePath $path) {
+          return @{ Key = 'failedTarArchive'; Message = 'Не удалось разобрать tar-архив (failedArchive)' }
+        }
+        return @{ Key = 'failedArchive'; Message = 'Ошибка разбора вложенного архива (failedArchive)' }
+      }
+      default { return @{ Key = 'entryStatus'; Message = ("Статус записи: {0} (entryStatus)" -f $statusName) } }
+    }
+  }
+
+  function Get-LocalizedErrorInfo([string]$text) {
+    $clean = ($text -replace '[\r\n]+',' ').Trim()
+    if ([string]::IsNullOrWhiteSpace($clean)) { return @{ Key = 'unknownError'; Message = 'Неизвестная ошибка (unknownError)' } }
+    foreach ($info in $Script:ErrorSummaryPatterns) {
+      if ($clean -match $info.Pattern) { return @{ Key = $info.Key; Message = $info.Message } }
+    }
+    return @{ Key = 'error'; Message = ("Ошибка: {0} (error)" -f $clean) }
+  }
+
+  function New-BrokenItem {
+    param(
+      [Parameter(Mandatory)] [string]$Path,
+      [Parameter(Mandatory)] [string]$ReasonKey,
+      [Parameter(Mandatory)] [string]$Message
+    )
+    return [pscustomobject]@{
+      Path      = $Path
+      ReasonKey = $ReasonKey
+      Message   = $Message
+    }
+  }
+
+  function Get-BrokenDetailSummary([object[]]$items) {
+    if (-not $items -or $items.Count -eq 0) { return "" }
+    $groups = $items | Group-Object -Property ReasonKey
+    if ($groups.Count -eq 1) {
+      $g = $groups[0]
+      $count = $g.Count
+      switch ($g.Name) {
+        'encryptedArchive' { return ("Зашифрованные вложения: {0} (encryptedArchive)" -f $count) }
+        'failedArchive'    { return ("Не удалось проверить вложенные архивы: {0} (failedArchive)" -f $count) }
+        'failedTarArchive' { return ("Не удалось разобрать tar-архивы: {0} (failedArchive)" -f $count) }
+        'brokenZipHeader'  { return ("Повреждённые ZIP-заголовки: {0} (brokenZipHeader)" -f $count) }
+        'fileEntry'        { return ("Сбой перечисления вложений: {0} (fileEntry)" -f $count) }
+        'outOfMemory'      { return "Недостаточно памяти при проверке (outOfMemory)" }
+        default            { return ("Обнаружены проблемные вложения: {0} ({1})" -f $count, $g.Name) }
+      }
+    }
+    $total = $items.Count
+    return ("Обнаружены проблемные вложения: {0} (brokenMixed)" -f $total)
+  }
 
   # ---------- тело одной обработки ----------
   function Invoke-One([System.IO.FileInfo]$fi) {
@@ -597,18 +714,21 @@ begin {
     $detail = $res.Detail
     $chains = @()
     if ($res.BrokenChains) { $chains = $res.BrokenChains }
+    if ([string]::IsNullOrWhiteSpace($detail)) { $detail = "" }
 
     # 2) Fallback: 7z t
     if ( ($status -eq "ERROR" -or $status -eq "TIMEOUT" -or $status -eq "UNAVAILABLE") -and $Use7z ) {
-      $to = [Math]::Min($PerFileTimeoutSec, 1200)           # ← исключаем парсерные косяки
+      $to = [Math]::Min($PerFileTimeoutSec, 1200)           # limit 7z verification time
       $z = Invoke-7zTest -exe $SevenZip -file $topPath -timeoutSec $to
       if ($z.Exit -eq 0) {
         $status = "OK"
-        $detail = "verified via 7z (container)"
+        $detail = "Проверено через 7-Zip (container)"
       } else {
         if ($status -ne "TIMEOUT") { $status = "BROKEN" }
-        if ([string]::IsNullOrEmpty($detail)) { $detail = ($z.Err -replace '[\r\n]+',' ') }
-        if (-not $chains -or $chains.Count -eq 0) { $chains = @("$topPath :: " + ($detail)) }
+        $rawErr = if ([string]::IsNullOrWhiteSpace($detail)) { ($z.Err -replace '[\r\n]+',' ') } else { $detail }
+        $errInfo = Get-LocalizedErrorInfo $rawErr
+        $detail = $errInfo.Message
+        if (-not $chains -or $chains.Count -eq 0) { $chains = @("$topPath :: $detail") }
       }
     }
 
@@ -619,13 +739,15 @@ begin {
       foreach ($ch in $chains) { if ($hash.Add($ch)) { [void]$dedup.Add($ch) } }
       $chains = $dedup.ToArray()
     }
+    $csvStatus = Get-LocalizedStatus $status
+    $csvDetail = if ([string]::IsNullOrWhiteSpace($detail)) { "" } else { $detail }
     if ($status -eq "BROKEN" -and $chains.Count -gt 0) {
       foreach ($ch in $chains) {
-        $line = ('"{0}","{1}","{2}","{3}"' -f (CsvEsc $topPath), 'BROKEN', (CsvEsc $ch), (CsvEsc $detail))
+        $line = ('"{0}","{1}","{2}","{3}"' -f (CsvEsc $topPath), (CsvEsc $csvStatus), (CsvEsc $ch), (CsvEsc $csvDetail))
         Append-LineSafe -filePath $csvPath -line $line
       }
     } else {
-      $line = ('"{0}","{1}","{2}","{3}"' -f (CsvEsc $topPath), (CsvEsc $status), "", (CsvEsc $detail))
+      $line = ('"{0}","{1}","{2}","{3}"' -f (CsvEsc $topPath), (CsvEsc $csvStatus), "", (CsvEsc $csvDetail))
       Append-LineSafe -filePath $csvPath -line $line
     }
 
@@ -637,8 +759,10 @@ begin {
           Append-LineSafe -filePath $brokenAll    -line $ch
         }
       } else {
-        Append-LineSafe -filePath $brokenLatest -line $topPath
-        Append-LineSafe -filePath $brokenAll    -line $topPath
+        $fallback = if ([string]::IsNullOrWhiteSpace($csvDetail)) { $csvStatus } else { $csvDetail }
+        $brokenLine = ("{0} :: {1}" -f $topPath, $fallback)
+        Append-LineSafe -filePath $brokenLatest -line $brokenLine
+        Append-LineSafe -filePath $brokenAll    -line $brokenLine
       }
     }
 
@@ -649,7 +773,8 @@ begin {
     }
 
     if ($status -ne 'OK' -and $status -ne 'BROKEN') {
-      $errDetail = if ([string]::IsNullOrEmpty($detail)) { $status } else { $detail }
+      $errStatus = $csvStatus
+      $errDetail = if ([string]::IsNullOrWhiteSpace($csvDetail)) { $errStatus } else { "$errStatus :: $csvDetail" }
       Append-LineSafe -filePath $errorsLatest -line ($topPath + "`t" + $errDetail)
     }
   }
@@ -691,4 +816,6 @@ end {
     Invoke-ArchiveAuditCleanup
   }
 }
+
+
 

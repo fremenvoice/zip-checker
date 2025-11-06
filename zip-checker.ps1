@@ -444,6 +444,12 @@ begin {
       if ($prop -and $prop.CanWrite) { $prop.SetValue($obj, $value) }
     }
 
+    $extractor = $null
+    $opts = $null
+    $entries = $null
+    $entriesEnumerator = $null
+    $buffer = $null
+
     try {
       $ExtractorType = Get-REType "$RE_NS.Extractor"
       $OptionsType   = Get-REType "$RE_NS.ExtractorOptions"
@@ -521,7 +527,6 @@ begin {
         return ($parts -join " | ")
       }
 
-      $entriesEnumerator = $null
       $enumerableCandidate = $entries -as [System.Collections.IEnumerable]
       if ($enumerableCandidate -and -not ($entries -is [string])) {
         $entriesEnumerator = $enumerableCandidate.GetEnumerator()
@@ -530,6 +535,8 @@ begin {
       } else {
         $entriesEnumerator = @().GetEnumerator()
       }
+
+      $buffer = New-Object byte[] 65536
 
       $lastPath = $top
       $enumeratorError = $null
@@ -561,8 +568,7 @@ begin {
           try {
             $stream = $entry.Content
             if ($null -eq $stream) { continue }
-            $buf = New-Object byte[] 65536
-            while (($read = $stream.Read($buf, 0, $buf.Length)) -gt 0) {
+            while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
               if ($sw.Elapsed.TotalSeconds -ge $timeoutSec) { throw [System.TimeoutException]::new("Timeout $timeoutSec s") }
             }
           } catch {
@@ -575,7 +581,10 @@ begin {
           }
         }
       } finally {
-        if ($entriesEnumerator -and ($entriesEnumerator -is [System.IDisposable])) { $entriesEnumerator.Dispose() }
+        if ($entriesEnumerator -and ($entriesEnumerator -is [System.IDisposable])) {
+          $entriesEnumerator.Dispose()
+        }
+        $entriesEnumerator = $null
       }
       if ($enumeratorError) {
         $enumeratorInfo = Get-LocalizedErrorInfo (Get-ErrorSummary $enumeratorError)
@@ -618,7 +627,22 @@ begin {
       $errorInfo = Get-LocalizedErrorInfo $errorText
       $result.Detail = $errorInfo.Message
     }
-    finally { $sw.Stop() }
+    finally {
+      if ($entries -and ($entries -is [System.IDisposable])) {
+        try { $entries.Dispose() } catch {}
+      }
+      if ($opts -and ($opts -is [System.IDisposable])) {
+        try { $opts.Dispose() } catch {}
+      }
+      if ($extractor -and ($extractor -is [System.IDisposable])) {
+        try { $extractor.Dispose() } catch {}
+      }
+      $entries = $null
+      $opts = $null
+      $extractor = $null
+      $buffer = $null
+      $sw.Stop()
+    }
 
     return $result
   }

@@ -56,9 +56,9 @@ begin {
 
     if ($Script:MemoryTrimThresholdMB -gt 0 -and -not ("ArchiveAudit.Native.WorkingSet" -as [type])) {
       Add-Type -Namespace ArchiveAudit.Native -Name WorkingSet -MemberDefinition @"
-    [DllImport(""psapi.dll"")]
-    public static extern bool EmptyWorkingSet(IntPtr hProcess);
-"@ -UsingNamespace 'System','System.Runtime.InteropServices'
+[global::System.Runtime.InteropServices.DllImport("psapi.dll")]
+public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
+"@
     }
 
     $bytesPerMB = [int64](1MB)

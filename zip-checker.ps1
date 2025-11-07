@@ -947,6 +947,9 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
     $eps = $elapsed.TotalSeconds / [math]::Max(1, $done)
     $etaSec = [int][math]::Round($eps * ($all - $done))
     Write-Host ("[{0}%] {1}/{2} | ETA {3}s" -f $pct, $done, $all, $etaSec)
+    if ($ShowProgress) {
+      try { Write-Progress -Id 1 -Activity "Archive audit" -Status ("{0}/{1} | ETA {2}s" -f $done, $all, $etaSec) -PercentComplete ([int]$pct) } catch {}
+    }
   }
 
   function CsvEsc([string]$s) { if ($null -eq $s) { return "" } return $s.Replace('"','""') }
@@ -1142,6 +1145,7 @@ end {
 
     $swAll.Stop()
     $duration = $swAll.Elapsed.ToString("hh\:mm\:ss")
+    if ($ShowProgress) { try { Write-Progress -Id 1 -Completed } catch {} }
     Write-Host ("Итого: {0} архивов, за {1}. CSV: {2}" -f $total, $duration, $csvPath) -ForegroundColor Green
     Write-Host ("State per-root: {0}" -f (($rootState.Values) -join '; '))
     Write-Host ("BROKEN (последние): {0}" -f $brokenLatest)

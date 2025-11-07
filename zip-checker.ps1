@@ -16,6 +16,8 @@
   Степень параллелизма. По умолчанию = числу логических ядер.
 .PARAMETER PerFileTimeoutSec
   Таймаут на проверку одного архива (по умолчанию 1800 сек).
+.PARAMETER MaxEntryInMemoryMB
+  Ограничение объема для буферизации вложений в RAM (МБ). 0 = писать все во временный каталог.
 .PARAMETER Restart
   Очистить per-root state и начать заново (CSV и broken_latest/errors_latest — заново).
 .PARAMETER Passwords
@@ -29,6 +31,7 @@ param(
   [string]$TempDir = (Join-Path 'T:\' "ArchiveAudit"),
   [int]$Threads = [Math]::Max(1, [Environment]::ProcessorCount),
   [int]$PerFileTimeoutSec = 1800,
+  [int]$MaxEntryInMemoryMB = 8,
   [switch]$Restart,
   [string[]]$Passwords
 )
@@ -41,6 +44,24 @@ begin {
     $Script:TempSessionDir = $null
     $Script:ArchiveAuditCleanupInvoked = $false
     $Script:TempBaseDir = $null
+    $Script:EntryMemoryCutoffBytes = 0
+    $Script:EntryFileBufferSizeBytes = 131072
+
+    $bytesPerMB = [int64](1MB)
+    if ($MaxEntryInMemoryMB -lt 0) {
+      throw "MaxEntryInMemoryMB must be greater or equal to 0 (0 = always flush to TEMP)."
+    }
+    if ($MaxEntryInMemoryMB -le 0) {
+      $Script:EntryMemoryCutoffBytes = 0
+      Write-Host "Вложенные файлы всегда буферизуются во временный каталог (MemoryStreamCutoff=0)." -ForegroundColor DarkCyan
+    } else {
+      $calcBytes = [int64]$MaxEntryInMemoryMB * $bytesPerMB
+      $maxAllowed = [int64][int]::MaxValue
+      $limitedBytes = [System.Math]::Min($maxAllowed, $calcBytes)
+      $Script:EntryMemoryCutoffBytes = [int]$limitedBytes
+      $displayMb = [math]::Round($Script:EntryMemoryCutoffBytes / [double]$bytesPerMB, 2)
+      Write-Host ("Держим вложения <= {0} МБ в RAM, остальные -> TEMP." -f $displayMb) -ForegroundColor DarkCyan
+    }
 
     function Invoke-ArchiveAuditCleanup {
       if ($Script:ArchiveAuditCleanupInvoked) { return }
@@ -459,6 +480,12 @@ begin {
       $extractor = [Activator]::CreateInstance($ExtractorType)
       $opts = if ($OptionsType) { [Activator]::CreateInstance($OptionsType) } else { $null }
       if ($opts) {
+        if ($Script:EntryMemoryCutoffBytes -ge 0) {
+          Set-Opt $opts 'MemoryStreamCutoff' $Script:EntryMemoryCutoffBytes
+        }
+        if ($Script:EntryFileBufferSizeBytes -gt 0) {
+          Set-Opt $opts 'FileStreamBufferSize' $Script:EntryFileBufferSizeBytes
+        }
         Set-Opt $opts 'ExtractSelfOnFail' $true
         Set-Opt $opts 'Recurse' $true
         Set-Opt $opts 'Parallel' $false

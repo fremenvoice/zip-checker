@@ -9,19 +9,21 @@
 .PARAMETER Path
   Один или несколько корневых путей (папки и/или одиночные файлы).
 .PARAMETER OutDir
-  Папка для CSV и итоговых списков (может быть на другом диске). По умолчанию — текущая.
+  Folder for CSV and audit summaries (default: C:\\Users\\local.admin\\Documents\\audit).
 .PARAMETER TempDir
-  Папка для временной физической распаковки (используется редко, только при CLI-fallback). По умолчанию: T:\\ArchiveAudit.
+  Folder for streaming temp extraction (SSD, high endurance). Default: T:\\ArchiveAudit.
 .PARAMETER Threads
-  Степень параллелизма. По умолчанию = числу логических ядер.
+  Degree of parallelism. Default = 1 (single thread to protect RAM).
 .PARAMETER PerFileTimeoutSec
   Таймаут на проверку одного архива (по умолчанию 1800 сек).
 .PARAMETER MaxEntryInMemoryMB
   Ограничение объема для буферизации вложений в RAM (МБ). 0 = писать все во временный каталог.
 .PARAMETER MemoryTrimThresholdMB
-  Порог рабочего набора процесса; при превышении вызывается GC+EmptyWorkingSet. 0 = не трогать.
+  Hard working-set cap triggering GC + EmptyWorkingSet. 0 = auto (percent-based).
+.PARAMETER MinTempFreeSpaceGB
+  Minimal free-space guard for TempDir (GB). 0 = disable guard.
 .PARAMETER TempCleanupRetentionHours
-  Автоудаление старых session_* каталога в TempDir возрастом старше N часов. 0 = отключено.
+  Cleanup horizon for leftover session_* folders in TempDir (hours). Default = 6.
 .PARAMETER Restart
   Очистить per-root state и начать заново (CSV и broken_latest/errors_latest — заново).
 .PARAMETER Passwords
@@ -31,14 +33,15 @@
 param(
   [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)]
   [string[]]$Path,
-  [string]$OutDir = (Get-Location).Path,
+  [string]$OutDir = 'C:\Users\local.admin\Documents\audit',
   [string]$TempDir = (Join-Path 'T:\' "ArchiveAudit"),
-  [int]$Threads = [Math]::Max(1, [Environment]::ProcessorCount),
+  [int]$Threads = 1,
   [int]$PerFileTimeoutSec = 1800,
-  [int]$MaxEntryInMemoryMB = -1,
+  [int]$MaxEntryInMemoryMB = 0,
   [int]$MemoryTrimThresholdMB = 0,
-  [int]$MemoryTrimPercent = 65,
-  [int]$TempCleanupRetentionHours = 48,
+  [int]$MemoryTrimPercent = 55,
+  [int]$MinTempFreeSpaceGB = 0,
+  [int]$TempCleanupRetentionHours = 6,
   [switch]$Restart,
   [string[]]$Passwords
 )
@@ -52,7 +55,7 @@ begin {
     $Script:ArchiveAuditCleanupInvoked = $false
     $Script:TempBaseDir = $null
     $Script:EntryMemoryCutoffBytes = 0
-    $Script:EntryFileBufferSizeBytes = 131072
+    $Script:EntryFileBufferSizeBytes = 65536
     $Script:MemoryTrimThresholdMB = [Math]::Max(0, $MemoryTrimThresholdMB)
     $Script:TotalRAM_MB = 0
 
@@ -60,6 +63,13 @@ begin {
       Add-Type -Namespace ArchiveAudit.Native -Name WorkingSet -MemberDefinition @"
 [global::System.Runtime.InteropServices.DllImport("psapi.dll")]
 public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
+"@
+    }
+
+    if ($Script:MemoryTrimThresholdMB -gt 0 -and -not ("ArchiveAudit.Native.WsTuner" -as [type])) {
+      Add-Type -Namespace ArchiveAudit.Native -Name WsTuner -MemberDefinition @"
+[global::System.Runtime.InteropServices.DllImport("kernel32.dll")]
+public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProcess, int dwMinimumWorkingSetSize, int dwMaximumWorkingSetSize);
 "@
     }
 
@@ -75,7 +85,7 @@ public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
 
     # Compute adaptive trim threshold (if MB not specified)
     if ($Script:MemoryTrimThresholdMB -le 0 -and $MemoryTrimPercent -gt 0 -and $Script:TotalRAM_MB -gt 0) {
-      $pct = [math]::Min(95,[math]::Max(5,$MemoryTrimPercent))
+      $pct = [math]::Min(90,[math]::Max(40,$MemoryTrimPercent))
       $Script:MemoryTrimThresholdMB = [int]([math]::Floor($Script:TotalRAM_MB * $pct / 100.0))
     }
 
@@ -90,21 +100,23 @@ public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
     }
     if ($MaxEntryInMemoryMB -le 0) {
       $Script:EntryMemoryCutoffBytes = 0
-      Write-Host "Вложенные файлы всегда буферизуются во временный каталог (MemoryStreamCutoff=0)." -ForegroundColor DarkCyan
-    } else {
+      Write-Host "Entry contents always buffered via TEMP (MemoryStreamCutoff=0)." -ForegroundColor DarkCyan
+    }
+    else {
       $calcBytes = [int64]$MaxEntryInMemoryMB * $bytesPerMB
       $maxAllowed = [int64][int]::MaxValue
       $limitedBytes = [System.Math]::Min($maxAllowed, $calcBytes)
       $Script:EntryMemoryCutoffBytes = [int]$limitedBytes
       $displayMb = [math]::Round($Script:EntryMemoryCutoffBytes / [double]$bytesPerMB, 2)
-      Write-Host ("Держим вложения <= {0} МБ в RAM, остальные -> TEMP." -f $displayMb) -ForegroundColor DarkCyan
+      Write-Host ("Keep entries <= {0} MB in RAM, larger -> TEMP." -f $displayMb) -ForegroundColor DarkCyan
     }
     $Script:BaselineEntryMemoryCutoffBytes = $Script:EntryMemoryCutoffBytes
 
     if ($Script:MemoryTrimThresholdMB -gt 0) {
-      Write-Host ("Рабочий набор будет подчищаться при превышении {0} МБ (GC + EmptyWorkingSet)." -f $Script:MemoryTrimThresholdMB) -ForegroundColor DarkCyan
-    } else {
-      Write-Host "MemoryTrimThresholdMB=0 — ограничение рабочего набора отключено." -ForegroundColor DarkCyan
+      Write-Host ("Working-set guard: {0} MB (GC/EmptyWorkingSet when exceeded)." -f $Script:MemoryTrimThresholdMB) -ForegroundColor DarkCyan
+    }
+    else {
+      Write-Host "MemoryTrimThresholdMB=0 -- working-set guard disabled." -ForegroundColor DarkCyan
     }
 
     function Invoke-ArchiveAuditCleanup {
@@ -125,7 +137,7 @@ public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
       }
     }
 
-    function Invoke-MemoryRelief {
+        function Invoke-MemoryRelief {
       param([int]$ThresholdMB)
       if ($ThresholdMB -le 0) { return }
       try {
@@ -133,15 +145,20 @@ public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
         if (-not $proc) { return }
         $currentMB = [math]::Round($proc.WorkingSet64 / 1MB, 2)
         if ($currentMB -lt $ThresholdMB) { return }
-        Write-Host ("[mem] Working set {0} МБ > {1} МБ — запускаю GC/EmptyWorkingSet." -f $currentMB, $ThresholdMB) -ForegroundColor DarkYellow
+        Write-Host ("[mem] Working set {0} MB > {1} MB — trimming (GC + WorkingSet)." -f $currentMB, $ThresholdMB) -ForegroundColor DarkYellow
+        if ($Script:EntryMemoryCutoffBytes -ne 0) {
+          $Script:EntryMemoryCutoffBytes = 0
+          Write-Host "Switched MemoryStreamCutoff to 0 (TEMP-only)." -ForegroundColor DarkYellow
+        }
+        [System.Runtime.GCSettings]::LargeObjectHeapCompactionMode = 'CompactOnce'
         [System.GC]::Collect()
         [System.GC]::WaitForPendingFinalizers()
         [System.GC]::Collect()
         try { [ArchiveAudit.Native.WorkingSet]::EmptyWorkingSet($proc.Handle) | Out-Null } catch {}
+        try { [ArchiveAudit.Native.WsTuner]::SetProcessWorkingSetSize($proc.Handle, -1, -1) | Out-Null } catch {}
+        Start-Sleep -Milliseconds 25
       } catch {}
-    }
-
-    function Remove-StaleSessionDirs {
+    }`r`n`r`n    function Remove-StaleSessionDirs {
       param(
         [Parameter(Mandatory)][string]$BaseDir,
         [Parameter(Mandatory)][int]$OlderThanHours
@@ -161,7 +178,27 @@ public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
         }
     }
 
-    $ErrorActionPreference = 'Stop'
+    function Assert-TempFreeSpace {
+      param(
+        [Parameter(Mandatory)][string]$TargetPath,
+        [Parameter(Mandatory)][int]$MinFreeGB,
+        [switch]$ThrowOnLow
+      )
+      if ($MinFreeGB -le 0) { return }
+      try {
+        $full = [IO.Path]::GetFullPath($TargetPath)
+        $root = [IO.Path]::GetPathRoot($full)
+        $drive = [System.IO.DriveInfo]::new($root)
+        $freeGB = [math]::Round($drive.AvailableFreeSpace / 1GB, 2)
+        if ($freeGB -lt $MinFreeGB) {
+          $msg = "TempDir free space is {0} GB (< {1} GB)." -f $freeGB, $MinFreeGB
+          if ($ThrowOnLow) { throw $msg } else { Write-Warning $msg }
+        }
+      } catch {
+        $msg = "Unable to evaluate TempDir free space: {0}" -f $_.Exception.Message
+        if ($ThrowOnLow) { throw $msg } else { Write-Warning $msg }
+      }
+    }    $ErrorActionPreference = 'Stop'
     try { $PSStyle.OutputRendering = 'PlainText' } catch {}
 
     try {
@@ -256,8 +293,7 @@ public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
     } catch {
       throw ("Не удалось создать временную директорию {0}: {1}" -f $TempDir, $_.Exception.Message)
     }
-  }
-  $Script:TempBaseDir = $TempDir
+  }`r`n  Assert-TempFreeSpace -TargetPath $TempDir -MinFreeGB $MinTempFreeSpaceGB -ThrowOnLow`r`n  $Script:TempBaseDir = $TempDir
   if ($TempCleanupRetentionHours -gt 0) {
     Remove-StaleSessionDirs -BaseDir $Script:TempBaseDir -OlderThanHours $TempCleanupRetentionHours
   }
@@ -680,6 +716,7 @@ public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
             if ($null -eq $stream) { continue }
             while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
               if ($sw.Elapsed.TotalSeconds -ge $timeoutSec) { throw [System.TimeoutException]::new("Timeout $timeoutSec s") }
+              Invoke-MemoryRelief -ThresholdMB $Script:MemoryTrimThresholdMB
             }
           } catch {
             $errorInfo = Get-LocalizedErrorInfo (Get-ErrorSummary $_)
@@ -858,6 +895,7 @@ public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
   function Invoke-One([System.IO.FileInfo]$fi) {
     $topPath = $fi.FullName
     Write-Host ("-> {0}" -f $topPath)
+    Assert-TempFreeSpace -TargetPath $Script:TempBaseDir -MinFreeGB $MinTempFreeSpaceGB -ThrowOnLow
     $root = Get-RootFor $topPath
     $stateFile = if ($root) { $rootState[$root] } else { $null }
 
@@ -971,6 +1009,8 @@ end {
     Invoke-ArchiveAuditCleanup
   }
 }
+
+
 
 
 

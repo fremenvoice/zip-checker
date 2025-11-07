@@ -35,8 +35,9 @@ param(
   [string]$TempDir = (Join-Path 'T:\' "ArchiveAudit"),
   [int]$Threads = [Math]::Max(1, [Environment]::ProcessorCount),
   [int]$PerFileTimeoutSec = 1800,
-  [int]$MaxEntryInMemoryMB = 0,
-  [int]$MemoryTrimThresholdMB = 4096,
+  [int]$MaxEntryInMemoryMB = -1,
+  [int]$MemoryTrimThresholdMB = 0,
+  [int]$MemoryTrimPercent = 65,
   [int]$TempCleanupRetentionHours = 48,
   [switch]$Restart,
   [string[]]$Passwords
@@ -53,6 +54,7 @@ begin {
     $Script:EntryMemoryCutoffBytes = 0
     $Script:EntryFileBufferSizeBytes = 131072
     $Script:MemoryTrimThresholdMB = [Math]::Max(0, $MemoryTrimThresholdMB)
+    $Script:TotalRAM_MB = 0
 
     if ($Script:MemoryTrimThresholdMB -gt 0 -and -not ("ArchiveAudit.Native.WorkingSet" -as [type])) {
       Add-Type -Namespace ArchiveAudit.Native -Name WorkingSet -MemberDefinition @"
@@ -62,6 +64,27 @@ public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
     }
 
     $bytesPerMB = [int64](1MB)
+    # Detect total physical RAM (MB)
+    try {
+      $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
+      if ($cs -and $cs.TotalPhysicalMemory) { $Script:TotalRAM_MB = [int]([math]::Round($cs.TotalPhysicalMemory / 1MB)) }
+    } catch {}
+    if ($Script:TotalRAM_MB -le 0) {
+      try { $Script:TotalRAM_MB = [int]([math]::Round((Get-ComputerInfo -ErrorAction Stop).CsTotalPhysicalMemory/1MB)) } catch {}
+    }
+
+    # Compute adaptive trim threshold (if MB not specified)
+    if ($Script:MemoryTrimThresholdMB -le 0 -and $MemoryTrimPercent -gt 0 -and $Script:TotalRAM_MB -gt 0) {
+      $pct = [math]::Min(95,[math]::Max(5,$MemoryTrimPercent))
+      $Script:MemoryTrimThresholdMB = [int]([math]::Floor($Script:TotalRAM_MB * $pct / 100.0))
+    }
+
+    # Compute adaptive entry-in-RAM cutoff when -1 (auto)
+    if ($MaxEntryInMemoryMB -lt 0) {
+      if ($Script:TotalRAM_MB -ge 24576) { $MaxEntryInMemoryMB = 64 }
+      elseif ($Script:TotalRAM_MB -ge 16384) { $MaxEntryInMemoryMB = 32 }
+      else { $MaxEntryInMemoryMB = 8 }
+    }
     if ($MaxEntryInMemoryMB -lt 0) {
       throw "MaxEntryInMemoryMB must be greater or equal to 0 (0 = always flush to TEMP)."
     }
@@ -76,6 +99,7 @@ public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
       $displayMb = [math]::Round($Script:EntryMemoryCutoffBytes / [double]$bytesPerMB, 2)
       Write-Host ("Держим вложения <= {0} МБ в RAM, остальные -> TEMP." -f $displayMb) -ForegroundColor DarkCyan
     }
+    $Script:BaselineEntryMemoryCutoffBytes = $Script:EntryMemoryCutoffBytes
 
     if ($Script:MemoryTrimThresholdMB -gt 0) {
       Write-Host ("Рабочий набор будет подчищаться при превышении {0} МБ (GC + EmptyWorkingSet)." -f $Script:MemoryTrimThresholdMB) -ForegroundColor DarkCyan

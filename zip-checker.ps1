@@ -22,6 +22,8 @@
   Hard working-set cap triggering GC + EmptyWorkingSet. 0 = auto (percent-based).
 .PARAMETER MinTempFreeSpaceGB
   Minimal free-space guard for TempDir (GB). 0 = disable guard.
+.PARAMETER MinAvailableMemoryMB
+  Abort run if свободная физическая память падает ниже порога (по умолчанию 2048 МБ).
 .PARAMETER TempCleanupRetentionHours
   Cleanup horizon for leftover session_* folders in TempDir (hours). Default = 6.
 .PARAMETER Restart
@@ -41,6 +43,7 @@ param(
   [int]$MemoryTrimThresholdMB = 0,
   [int]$MemoryTrimPercent = 55,
   [int]$MinTempFreeSpaceGB = 0,
+  [int]$MinAvailableMemoryMB = 2048,
   [int]$TempCleanupRetentionHours = 6,
   [switch]$Restart,
   [string[]]$Passwords
@@ -157,6 +160,7 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
         try { [ArchiveAudit.Native.WorkingSet]::EmptyWorkingSet($proc.Handle) | Out-Null } catch {}
         try { [ArchiveAudit.Native.WsTuner]::SetProcessWorkingSetSize($proc.Handle, -1, -1) | Out-Null } catch {}
         Start-Sleep -Milliseconds 25
+        Assert-MemoryHeadroom -MinMB $MinAvailableMemoryMB
       } catch {}
     }
 
@@ -200,7 +204,36 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
         $msg = "Unable to evaluate TempDir free space: {0}" -f $_.Exception.Message
         if ($ThrowOnLow) { throw $msg } else { Write-Warning $msg }
       }
-    }    $ErrorActionPreference = 'Stop'
+    }
+
+    function Get-AvailablePhysicalMemoryMB {
+      try {
+        $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+        if ($os -and $os.FreePhysicalMemory) {
+          return [int]([math]::Round($os.FreePhysicalMemory / 1024))
+        }
+      } catch {}
+      try {
+        $info = [System.GC]::GetGCMemoryInfo()
+        if ($info -and $info.TotalAvailableMemoryBytes) {
+          $free = $info.TotalAvailableMemoryBytes - [System.GC]::GetTotalMemory($false)
+          return [int]([math]::Round($free / 1MB))
+        }
+      } catch {}
+      return -1
+    }
+
+    function Assert-MemoryHeadroom {
+      param([int]$MinMB)
+      if ($MinMB -le 0) { return }
+      $freeMb = Get-AvailablePhysicalMemoryMB
+      if ($freeMb -lt 0) { return }
+      if ($freeMb -lt $MinMB) {
+        throw ("Available physical memory {0} MB < required {1} MB. Aborting to avoid crash." -f $freeMb, $MinMB)
+      }
+    }
+
+    $ErrorActionPreference = 'Stop'
     try { $PSStyle.OutputRendering = 'PlainText' } catch {}
 
     try {
@@ -265,6 +298,7 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
     }
     if ([IO.File]::Exists($r)) {
       $rootState[$r] = $null
+  Assert-MemoryHeadroom -MinMB 
       continue
     }
     # запасной путь: если Test-Path считает контейнером, но Should-Include говорит "архив"
@@ -297,6 +331,7 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
     }
   }
   Assert-TempFreeSpace -TargetPath $TempDir -MinFreeGB $MinTempFreeSpaceGB -ThrowOnLow
+  Assert-MemoryHeadroom -MinMB $MinAvailableMemoryMB
   $Script:TempBaseDir = $TempDir
   if ($TempCleanupRetentionHours -gt 0) {
     Remove-StaleSessionDirs -BaseDir $Script:TempBaseDir -OlderThanHours $TempCleanupRetentionHours
@@ -900,6 +935,7 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
     $topPath = $fi.FullName
     Write-Host ("-> {0}" -f $topPath)
     Assert-TempFreeSpace -TargetPath $Script:TempBaseDir -MinFreeGB $MinTempFreeSpaceGB -ThrowOnLow
+    Assert-MemoryHeadroom -MinMB $MinAvailableMemoryMB
     $root = Get-RootFor $topPath
     $stateFile = if ($root) { $rootState[$root] } else { $null }
 

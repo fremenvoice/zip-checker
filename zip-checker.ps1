@@ -60,7 +60,9 @@ param(
   # Disable external 7-Zip fallback entirely (safer after BSOD incident)
   [switch]$Disable7zFallback,
   # Opt out of background I/O mode (Very Low I/O priority); enabled by default
-  [switch]$DisableBackgroundIO
+  [switch]$DisableBackgroundIO,
+  # Show interactive progress bars in PowerShell
+  [switch]$ShowProgress
 )
 
 
@@ -677,7 +679,7 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
   else { Write-Host "Не удалось загрузить библиотеку RecursiveExtractor — будет больше fallback'ов." -ForegroundColor DarkYellow }
 
   # ---------- Проверка одной записи через библиотеку ----------
-    function Test-ArchiveDeep-Lib([string]$file, [int]$timeoutSec, [string[]]$pwds) {
+    function Test-ArchiveDeep-Lib([string]$file, [int]$timeoutSec, [string[]]$pwds, [bool]$showProgress = $false) {
     $result = [ordered]@{ Status=""; Detail=""; BrokenChains=@(); BrokenItems=@() }
     if (-not $REAvailable) {
       $result.Status = "UNAVAILABLE"
@@ -733,6 +735,16 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
       }
 
       $entries = if ($opts) { $extractor.Extract($file, $opts) } else { $extractor.Extract($file) }
+
+      # Prepare per-file progress (approximate by uncompressed bytes vs top file length)
+      $topLen = 0
+      $topName = (Split-Path -Leaf $file)
+      try { $topLen = ([System.IO.FileInfo]::new($file)).Length } catch {}
+      [int64]$topRead = 0
+      $progressIdChild = 2
+      if ($showProgress) {
+        try { Write-Progress -Id $progressIdChild -ParentId 1 -Activity ("Scanning {0}" -f $topName) -Status "Reading entries..." -PercentComplete 0 } catch {}
+      }
 
       function Format-EntryPath([object]$entryObj) {
         if ($null -eq $entryObj) { return $top }
@@ -829,6 +841,13 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
             while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
               if ($sw.Elapsed.TotalSeconds -ge $timeoutSec) { throw [System.TimeoutException]::new("Timeout $timeoutSec s") }
               Invoke-MemoryRelief -ThresholdMB $Script:MemoryTrimThresholdMB
+              if ($showProgress -and $topLen -gt 0) {
+                $topRead += [int64]$read
+                $pctNow = [int][math]::Min(99, [math]::Floor(($topRead * 100.0) / $topLen))
+                try { Write-Progress -Id $progressIdChild -ParentId 1 -Activity ("Scanning {0}" -f $topName) -Status $currentPath -PercentComplete $pctNow } catch {}
+              } elseif ($showProgress) {
+                try { Write-Progress -Id $progressIdChild -ParentId 1 -Activity ("Scanning {0}" -f $topName) -Status $currentPath -PercentComplete -1 } catch {}
+              }
               if ($Script:ThrottleBytesPerSec -gt 0) {
                 $throttleBytes += [int64]$read
                 $elapsed = $throttleWindow.Elapsed.TotalSeconds
@@ -914,6 +933,9 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
       $extractor = $null
       $buffer = $null
       $sw.Stop()
+      if ($showProgress) {
+        try { Write-Progress -Id $progressIdChild -Completed } catch {}
+      }
     }
 
     return $result
@@ -1026,7 +1048,7 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
     $stateFile = if ($root) { $rootState[$root] } else { $null }
 
     # 1) Основной тест
-    $res = Test-ArchiveDeep-Lib -file $topPath -timeoutSec $PerFileTimeoutSec -pwds $Passwords
+    $res = Test-ArchiveDeep-Lib -file $topPath -timeoutSec $PerFileTimeoutSec -pwds $Passwords -showProgress:$ShowProgress
     $status = $res.Status
     $detail = $res.Detail
     $chains = @()

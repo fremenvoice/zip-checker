@@ -29,7 +29,13 @@
 .PARAMETER Restart
   Очистить per-root state и начать заново (CSV и broken_latest/errors_latest — заново).
 .PARAMETER Passwords
-  Список паролей для проверки защищённых контейнеров (zip/7z/rar4).
+  ���᮪ ��஫�� ��� �஢�ન ������� ���⥩��஢ (zip/7z/rar4).
+.PARAMETER AllowDiskImages
+  �����/������� ��������� �������-�������� (.iso/.vhd/.vhdx/.vmdk/.wim/.dmg). �� ��������� ���������,
+  �஢���� ����⭮����� BSOD IRQL_NOT_LESS_OR_EQUAL �� ������ �����.
+.PARAMETER EnableAggressiveMemoryTrim
+  ��⮪������ �������� working-set (EmptyWorkingSet/SetProcessWorkingSetSize). �� ��������� ���������, ����ᮢ��
+  ���� ᢮������� driver'�� �������� �������� � IRQL_NOT_LESS_OR_EQUAL.
 #>
 [CmdletBinding()]
 param(
@@ -39,14 +45,22 @@ param(
   [string]$TempDir = (Join-Path 'T:\' "ArchiveAudit"),
   [int]$Threads = 1,
   [int]$PerFileTimeoutSec = 1800,
+  # Optional throttling to reduce kernel/FS driver pressure; 0 = unlimited
+  [int]$ThrottleMBps = 0,
   [int]$MaxEntryInMemoryMB = 0,
   [int]$MemoryTrimThresholdMB = 0,
   [int]$MemoryTrimPercent = 55,
+  [switch]$EnableAggressiveMemoryTrim,
   [int]$MinTempFreeSpaceGB = 0,
   [int]$MinAvailableMemoryMB = 2048,
   [int]$TempCleanupRetentionHours = 6,
+  [switch]$AllowDiskImages,
   [switch]$Restart,
-  [string[]]$Passwords
+  [string[]]$Passwords,
+  # Disable external 7-Zip fallback entirely (safer after BSOD incident)
+  [switch]$Disable7zFallback,
+  # Opt out of background I/O mode (Very Low I/O priority); enabled by default
+  [switch]$DisableBackgroundIO
 )
 
 
@@ -59,22 +73,15 @@ begin {
     $Script:TempBaseDir = $null
     $Script:EntryMemoryCutoffBytes = 0
     $Script:EntryFileBufferSizeBytes = 65536
-    $Script:MemoryTrimThresholdMB = [Math]::Max(0, $MemoryTrimThresholdMB)
+    $Script:MemoryTrimThresholdMB = 0
+    $Script:ThrottleBytesPerSec = 0
     $Script:TotalRAM_MB = 0
-
-    if ($Script:MemoryTrimThresholdMB -gt 0 -and -not ("ArchiveAudit.Native.WorkingSet" -as [type])) {
-      Add-Type -Namespace ArchiveAudit.Native -Name WorkingSet -MemberDefinition @"
-[global::System.Runtime.InteropServices.DllImport("psapi.dll")]
-public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
-"@
-    }
-
-    if ($Script:MemoryTrimThresholdMB -gt 0 -and -not ("ArchiveAudit.Native.WsTuner" -as [type])) {
-      Add-Type -Namespace ArchiveAudit.Native -Name WsTuner -MemberDefinition @"
-[global::System.Runtime.InteropServices.DllImport("kernel32.dll")]
-public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProcess, int dwMinimumWorkingSetSize, int dwMaximumWorkingSetSize);
-"@
-    }
+    $Script:DiskImagesSkipped = 0
+    $Script:DiskImageWarningShown = $false
+    $Script:WorkingSetTrimEnabled = $false
+    $trimRequested = $EnableAggressiveMemoryTrim.IsPresent -or
+      $PSBoundParameters.ContainsKey('MemoryTrimThresholdMB') -or
+      $PSBoundParameters.ContainsKey('MemoryTrimPercent')
 
     $bytesPerMB = [int64](1MB)
     # Detect total physical RAM (MB)
@@ -86,10 +93,29 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
       try { $Script:TotalRAM_MB = [int]([math]::Round((Get-ComputerInfo -ErrorAction Stop).CsTotalPhysicalMemory/1MB)) } catch {}
     }
 
-    # Compute adaptive trim threshold (if MB not specified)
-    if ($Script:MemoryTrimThresholdMB -le 0 -and $MemoryTrimPercent -gt 0 -and $Script:TotalRAM_MB -gt 0) {
-      $pct = [math]::Min(90,[math]::Max(40,$MemoryTrimPercent))
-      $Script:MemoryTrimThresholdMB = [int]([math]::Floor($Script:TotalRAM_MB * $pct / 100.0))
+    if ($trimRequested) {
+      $Script:MemoryTrimThresholdMB = [Math]::Max(0, $MemoryTrimThresholdMB)
+      if ($Script:MemoryTrimThresholdMB -le 0 -and $MemoryTrimPercent -gt 0 -and $Script:TotalRAM_MB -gt 0) {
+        $pct = [math]::Min(90,[math]::Max(40,$MemoryTrimPercent))
+        $Script:MemoryTrimThresholdMB = [int]([math]::Floor($Script:TotalRAM_MB * $pct / 100.0))
+      }
+      if ($Script:MemoryTrimThresholdMB -gt 0) {
+        if (-not ("ArchiveAudit.Native.WorkingSet" -as [type])) {
+          Add-Type -Namespace ArchiveAudit.Native -Name WorkingSet -MemberDefinition @"
+[global::System.Runtime.InteropServices.DllImport("psapi.dll")]
+public static extern bool EmptyWorkingSet(global::System.IntPtr hProcess);
+"@
+        }
+        if (-not ("ArchiveAudit.Native.WsTuner" -as [type])) {
+          Add-Type -Namespace ArchiveAudit.Native -Name WsTuner -MemberDefinition @"
+[global::System.Runtime.InteropServices.DllImport("kernel32.dll")]
+public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProcess, int dwMinimumWorkingSetSize, int dwMaximumWorkingSetSize);
+"@
+        }
+        $Script:WorkingSetTrimEnabled = $true
+      } else {
+        Write-Warning "Aggressive memory trim requested, but effective threshold <= 0 - feature left disabled."
+      }
     }
 
     # Compute adaptive entry-in-RAM cutoff when -1 (auto)
@@ -115,13 +141,17 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
     }
     $Script:BaselineEntryMemoryCutoffBytes = $Script:EntryMemoryCutoffBytes
 
-    if ($Script:MemoryTrimThresholdMB -gt 0) {
+    if ($Script:WorkingSetTrimEnabled) {
       Write-Host ("Working-set guard: {0} MB (GC/EmptyWorkingSet when exceeded)." -f $Script:MemoryTrimThresholdMB) -ForegroundColor DarkCyan
     }
     else {
-      Write-Host "MemoryTrimThresholdMB=0 -- working-set guard disabled." -ForegroundColor DarkCyan
+      Write-Host "Working-set trim disabled by default (SafeMode after BSOD IRQL_NOT_LESS_OR_EQUAL). Use -EnableAggressiveMemoryTrim to opt-in once drivers are fixed." -ForegroundColor DarkYellow
     }
-
+    # Configure optional read throttle
+    if ($ThrottleMBps -gt 0) {
+      $Script:ThrottleBytesPerSec = [int64]$ThrottleMBps * 1MB
+      Write-Host ("Read throttle enabled: {0} MB/s" -f $ThrottleMBps) -ForegroundColor DarkCyan
+    }
     function Invoke-ArchiveAuditCleanup {
       if ($Script:ArchiveAuditCleanupInvoked) { return }
       $Script:ArchiveAuditCleanupInvoked = $true
@@ -231,15 +261,39 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
       if ($freeMb -lt $MinMB) {
         throw ("Available physical memory {0} MB < required {1} MB. Aborting to avoid crash." -f $freeMb, $MinMB)
       }
+    }     = 
+    try {  = Get-Service -Name 'HFS' -ErrorAction Stop } catch {}
+    if (-not ) {
+      if () {
+        Write-Host ("Disk image formats disabled (service 'HFS' state: {0}). Use -AllowDiskImages only after driver fix / BSOD investigation." -f .Status) -ForegroundColor DarkYellow
+      } else {
+        Write-Host "Disk image formats (.iso/.vhd/.vmdk/.wim/.dmg) skipped by default after IRQL_NOT_LESS_OR_EQUAL incident. Use -AllowDiskImages to opt in once drivers are fixed." -ForegroundColor DarkYellow
+      }
+    } elseif ( -and .Status -ne 'Running') {
+      Write-Warning ("Service 'HFS' status {0}: disk-image audit may still trip IRQL_NOT_LESS_OR_EQUAL." -f .Status)
     }
 
-    $ErrorActionPreference = 'Stop'
+    Continue = 'Stop'
     try { $PSStyle.OutputRendering = 'PlainText' } catch {}
 
     try {
       $currentProcess = [System.Diagnostics.Process]::GetCurrentProcess()
       if ($currentProcess) {
         $currentProcess.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal
+      }
+    } catch {}
+
+    # Enable Background I/O (Very Low I/O priority) by default to reduce impact on FS drivers
+    try {
+      if (-not $DisableBackgroundIO.IsPresent) {
+        if (-not ("ArchiveAudit.Native.ProcPriority" -as [type])) {
+          Add-Type -Namespace ArchiveAudit.Native -Name ProcPriority -MemberDefinition @"
+[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern System.IntPtr GetCurrentProcess();
+[System.Runtime.InteropServices.DllImport("kernel32.dll")] public static extern bool SetPriorityClass(System.IntPtr hProcess, uint dwPriorityClass);
+"@
+        }
+        # PROCESS_MODE_BACKGROUND_BEGIN = 0x00100000
+        $null = [ArchiveAudit.Native.ProcPriority]::SetPriorityClass([ArchiveAudit.Native.ProcPriority]::GetCurrentProcess(), 0x00100000)
       }
     } catch {}
 
@@ -251,6 +305,12 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
   } catch {}
 
   # ---------- Форматы / многотомники ----------
+  $diskImageExt = @(
+    '.iso','.vhd','.vhdx','.vmdk','.wim','.dmg'
+  )
+  $Script:DiskImageExtSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($diExt in $diskImageExt) { [void]$Script:DiskImageExtSet.Add($diExt) }
+
   $supportedExt = @(
     '.zip','.7z','.rar',
     '.tar','.tgz','.tar.gz','.txz','.tar.xz','.tbz2','.tar.bz2',
@@ -260,6 +320,14 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
   function Should-Include([IO.FileInfo]$fi) {
     $n = $fi.Name.ToLowerInvariant()
     $ext = $fi.Extension.ToLowerInvariant()
+    if (-not $AllowDiskImages -and $Script:DiskImageExtSet.Contains($ext)) {
+      $Script:DiskImagesSkipped++
+      if (-not $Script:DiskImageWarningShown) {
+        Write-Warning "Skipping disk-image container by default (use -AllowDiskImages after драйвер фикса IRQL_NOT_LESS_OR_EQUAL)."
+        $Script:DiskImageWarningShown = $true
+      }
+      return $false
+    }
     $isSupported =
       $supportedExt -contains $ext -or
       $n.EndsWith('.tar.gz') -or $n.EndsWith('.tar.bz2') -or $n.EndsWith('.tar.xz')
@@ -722,6 +790,8 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
       }
 
       $buffer = New-Object byte[] 65536
+      $throttleWindow = [System.Diagnostics.Stopwatch]::StartNew()
+      [int64]$throttleBytes = 0
 
       $lastPath = $top
       $enumeratorError = $null
@@ -756,6 +826,19 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
             while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
               if ($sw.Elapsed.TotalSeconds -ge $timeoutSec) { throw [System.TimeoutException]::new("Timeout $timeoutSec s") }
               Invoke-MemoryRelief -ThresholdMB $Script:MemoryTrimThresholdMB
+              if ($Script:ThrottleBytesPerSec -gt 0) {
+                $throttleBytes += [int64]$read
+                $elapsed = $throttleWindow.Elapsed.TotalSeconds
+                if ($elapsed -le 0) { $elapsed = 0.0001 }
+                $expected = $throttleBytes / [double]$Script:ThrottleBytesPerSec
+                if ($expected -gt $elapsed) {
+                  $sleepMs = [int][math]::Ceiling(1000 * ($expected - $elapsed))
+                  if ($sleepMs -gt 0 -and $sleepMs -lt 2000) { Start-Sleep -Milliseconds $sleepMs }
+                }
+                if ($elapsed -ge 1.0 -or $throttleBytes -ge $Script:ThrottleBytesPerSec) {
+                  $throttleWindow.Restart(); $throttleBytes = 0
+                }
+              }
             }
           } catch {
             $errorInfo = Get-LocalizedErrorInfo (Get-ErrorSummary $_)
@@ -947,8 +1030,8 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
     if ($res.BrokenChains) { $chains = $res.BrokenChains }
     if ([string]::IsNullOrWhiteSpace($detail)) { $detail = "" }
 
-    # 2) Fallback: 7z t
-    if ( ($status -eq "ERROR" -or $status -eq "TIMEOUT" -or $status -eq "UNAVAILABLE") -and $Use7z ) {
+    # 2) Fallback: 7z t (can be disabled by -Disable7zFallback)
+    if ( ($status -eq "ERROR" -or $status -eq "TIMEOUT" -or $status -eq "UNAVAILABLE") -and $Use7z -and (-not $Disable7zFallback.IsPresent) ) {
       $to = [Math]::Min($PerFileTimeoutSec, 1200)           # limit 7z verification time
       $z = Invoke-7zTest -exe $SevenZip -file $topPath -timeoutSec $to
       if ($z.Exit -eq 0) {
@@ -1049,6 +1132,13 @@ end {
     Invoke-ArchiveAuditCleanup
   }
 }
+
+
+
+
+
+
+
 
 
 

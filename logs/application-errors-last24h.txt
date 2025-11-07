@@ -1,0 +1,81 @@
+
+TimeCreated      : 07.11.2025 10:28:32
+Id               : 264
+LevelDisplayName : Ошибка
+ProviderName     : Microsoft-Windows-Defrag
+Message          : Модулю оптимизации дисков не удалось завершить повторная оптимизация на Vault (V:) по следующей причине: Оборудование тома не поддерживает запрошенную операцию. (0x8900002A)
+
+TimeCreated      : 07.11.2025 10:19:49
+Id               : 1000
+LevelDisplayName : Ошибка
+ProviderName     : Application Error
+Message          : Имя сбойного приложения: UNIFIE~1.EXE, версия: 5.8.0.1013, метка времени: 0x5d63db04
+                   Имя сбойного модуля: UNIFIE~1.EXE, версия: 5.8.0.1013, метка времени: 0x5d63db04
+                   Код исключения: 0xc0000005
+                   Смещение ошибки: 0x001f6e27
+                   Идентификатор сбойного процесса: 0x2f0c
+                   Время запуска сбойного приложения: 0x01dc4f9b0c044097
+                   Путь сбойного приложения: C:\PROGRA~2\COMMON~1\NPOCOM~1\Directum\UNIFIE~1.EXE
+                   Путь сбойного модуля: C:\PROGRA~2\COMMON~1\NPOCOM~1\Directum\UNIFIE~1.EXE
+                   Идентификатор отчета: 363ac74e-2469-4064-baea-7784ca91dd76
+                   Полное имя сбойного пакета: 
+                   Код приложения, связанного со сбойным пакетом: 
+
+TimeCreated      : 07.11.2025 7:59:24
+Id               : 1
+LevelDisplayName : Ошибка
+ProviderName     : Multipass
+Message          : [url downloader] Cannot retrieve headers for https://cdimage.ubuntu.com/ubuntu-core/22/stable/current/ubuntu-core-22-amd64.img.xz: Host cdimage.ubuntu.com not found
+                   
+
+TimeCreated      : 07.11.2025 7:59:24
+Id               : 1
+LevelDisplayName : Ошибка
+ProviderName     : Multipass
+Message          : [url downloader] Cannot retrieve headers for https://cdimage.ubuntu.com/ubuntu-core/18/stable/current/ubuntu-core-18-amd64.img.xz: Host cdimage.ubuntu.com not found
+                   
+
+TimeCreated      : 07.11.2025 7:59:24
+Id               : 1
+LevelDisplayName : Ошибка
+ProviderName     : Multipass
+Message          : [url downloader] Cannot retrieve headers for https://cdimage.ubuntu.com/ubuntu-core/16/stable/current/ubuntu-core-16-amd64.img.xz: Host cdimage.ubuntu.com not found
+                   
+
+TimeCreated      : 07.11.2025 7:59:24
+Id               : 1
+LevelDisplayName : Ошибка
+ProviderName     : Multipass
+Message          : [url downloader] Cannot retrieve headers for https://cdimage.ubuntu.com/ubuntu-core/20/stable/current/ubuntu-core-20-amd64.img.xz: Host cdimage.ubuntu.com not found
+                   
+
+TimeCreated      : 07.11.2025 7:59:24
+Id               : 1
+LevelDisplayName : Ошибка
+ProviderName     : Multipass
+Message          : [url downloader] Cannot retrieve headers for https://cdimage.ubuntu.com/ubuntu-core/24/stable/current/ubuntu-core-24-amd64.img.xz: Host cdimage.ubuntu.com not found
+                   
+
+TimeCreated      : 07.11.2025 7:59:23
+Id               : 1
+LevelDisplayName : Ошибка
+ProviderName     : Multipass
+Message          : [url downloader] Failed to get https://canonical.com/static/files/latest-multipass-releases.json: Error opening https://canonical.com/static/files/latest-multipass-releases.json
+                   
+
+TimeCreated      : 06.11.2025 15:00:30
+Id               : 1000
+LevelDisplayName : Ошибка
+ProviderName     : Application Error
+Message          : Имя сбойного приложения: SBLogon.exe, версия: 7.58.9.1001, метка времени: 0x642e9fd5
+                   Имя сбойного модуля: KERNELBASE.dll, версия: 10.0.19041.6216, метка времени: 0x574726b0
+                   Код исключения: 0x0eedfade
+                   Смещение ошибки: 0x0013b6d2
+                   Идентификатор сбойного процесса: 0x3630
+                   Время запуска сбойного приложения: 0x01dc4f0c90602d50
+                   Путь сбойного приложения: C:\PROGRA~2\COMMON~1\NPOCOM~1\IS-BUI~1\SBLogon.exe
+                   Путь сбойного модуля: C:\Windows\System32\KERNELBASE.dll
+                   Идентификатор отчета: 81cc34fd-3472-4184-9097-660d3fa7fd38
+                   Полное имя сбойного пакета: 
+                   Код приложения, связанного со сбойным пакетом: 
+

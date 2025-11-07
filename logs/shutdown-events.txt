@@ -1,0 +1,349 @@
+
+TimeCreated      : 07.11.2025 7:59:20
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 06.11.2025 16:10:29
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 06.11.2025 16:10:19
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Выключение питания" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Выключение питания
+                    Комментарий: 
+
+TimeCreated      : 06.11.2025 7:56:31
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 05.11.2025 16:23:45
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 05.11.2025 16:23:34
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Выключение питания" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Выключение питания
+                    Комментарий: 
+
+TimeCreated      : 05.11.2025 8:02:33
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 01.11.2025 15:25:17
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 01.11.2025 15:25:02
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Выключение питания" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Выключение питания
+                    Комментарий: 
+
+TimeCreated      : 01.11.2025 7:56:29
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 31.10.2025 16:10:32
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 31.10.2025 16:10:21
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Выключение питания" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Выключение питания
+                    Комментарий: 
+
+TimeCreated      : 31.10.2025 7:59:59
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 30.10.2025 16:22:46
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 30.10.2025 16:22:36
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Выключение питания" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Выключение питания
+                    Комментарий: 
+
+TimeCreated      : 30.10.2025 7:43:55
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 29.10.2025 16:27:50
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 29.10.2025 16:27:39
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Выключение питания" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Выключение питания
+                    Комментарий: 
+
+TimeCreated      : 29.10.2025 10:07:12
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 29.10.2025 10:06:45
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 29.10.2025 10:06:19
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Перезапустить" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Перезапустить
+                    Комментарий: 
+
+TimeCreated      : 29.10.2025 7:46:41
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 28.10.2025 16:37:13
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 28.10.2025 16:37:01
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Выключение питания" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Выключение питания
+                    Комментарий: 
+
+TimeCreated      : 28.10.2025 14:42:57
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 28.10.2025 14:42:27
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 28.10.2025 14:42:09
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Перезапустить" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Перезапустить
+                    Комментарий: 
+
+TimeCreated      : 28.10.2025 7:58:54
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 27.10.2025 16:29:09
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 27.10.2025 16:28:55
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Выключение питания" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Выключение питания
+                    Комментарий: 
+
+TimeCreated      : 27.10.2025 7:55:28
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 24.10.2025 16:30:38
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 24.10.2025 16:30:24
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Выключение питания" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Выключение питания
+                    Комментарий: 
+
+TimeCreated      : 24.10.2025 10:11:43
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 24.10.2025 10:11:14
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 24.10.2025 10:10:56
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\Temp\{029FBE15-CFDB-4CBD-90CC-5CD8F9A0B842}\.cr\VC_redist.x64.exe (W949W10) инициировал действие "Перезапустить" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Приложение: Установка (Запланированная)
+                    Код причины: 0x80040002
+                    Тип выключения: Перезапустить
+                    Комментарий: 
+
+TimeCreated      : 24.10.2025 10:07:23
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 24.10.2025 10:06:55
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 24.10.2025 10:06:37
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Перезапустить" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Перезапустить
+                    Комментарий: 
+
+TimeCreated      : 24.10.2025 8:22:28
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 24.10.2025 8:21:59
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 24.10.2025 8:21:45
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Перезапустить" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Перезапустить
+                    Комментарий: 
+
+TimeCreated      : 24.10.2025 7:54:28
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 23.10.2025 16:31:50
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 23.10.2025 16:31:37
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Выключение питания" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Выключение питания
+                    Комментарий: 
+
+TimeCreated      : 23.10.2025 15:51:50
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 23.10.2025 15:51:22
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+
+TimeCreated      : 23.10.2025 15:51:11
+Id               : 1074
+LevelDisplayName : Сведения
+ProviderName     : User32
+Message          : Процесс C:\Windows\System32\RuntimeBroker.exe (W949W10) инициировал действие "Перезапустить" для компьютера W949W10 от имени пользователя NT_WORK\Ivanov_DS по причине: Другое (Незапланированное)
+                    Код причины: 0x0
+                    Тип выключения: Перезапустить
+                    Комментарий: 
+
+TimeCreated      : 23.10.2025 13:55:55
+Id               : 6005
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Запущена служба журнала событий.
+
+TimeCreated      : 23.10.2025 13:55:27
+Id               : 6006
+LevelDisplayName : Сведения
+ProviderName     : EventLog
+Message          : Служба журнала событий остановлена.
+

@@ -1,0 +1,121 @@
+
+TimeCreated      : 07.11.2025 7:59:16
+Id               : 172
+LevelDisplayName : Сведения
+Message          : Состояние подключения в режиме ожидания: Disconnected, причина: NIC compliance
+
+TimeCreated      : 06.11.2025 16:10:34
+Id               : 109
+LevelDisplayName : Сведения
+Message          : Диспетчер питания ядра инициировал завершение работы.
+                   
+                   Причина завершения работы: Kernel API
+
+TimeCreated      : 06.11.2025 7:56:27
+Id               : 172
+LevelDisplayName : Сведения
+Message          : Состояние подключения в режиме ожидания: Disconnected, причина: NIC compliance
+
+TimeCreated      : 05.11.2025 16:23:50
+Id               : 109
+LevelDisplayName : Сведения
+Message          : Диспетчер питания ядра инициировал завершение работы.
+                   
+                   Причина завершения работы: Kernel API
+
+TimeCreated      : 05.11.2025 8:02:25
+Id               : 172
+LevelDisplayName : Сведения
+Message          : Состояние подключения в режиме ожидания: Disconnected, причина: NIC compliance
+
+TimeCreated      : 01.11.2025 15:25:22
+Id               : 109
+LevelDisplayName : Сведения
+Message          : Диспетчер питания ядра инициировал завершение работы.
+                   
+                   Причина завершения работы: Kernel API
+
+TimeCreated      : 01.11.2025 7:56:25
+Id               : 172
+LevelDisplayName : Сведения
+Message          : Состояние подключения в режиме ожидания: Disconnected, причина: NIC compliance
+
+TimeCreated      : 31.10.2025 16:10:37
+Id               : 109
+LevelDisplayName : Сведения
+Message          : Диспетчер питания ядра инициировал завершение работы.
+                   
+                   Причина завершения работы: Kernel API
+
+TimeCreated      : 31.10.2025 7:59:54
+Id               : 172
+LevelDisplayName : Сведения
+Message          : Состояние подключения в режиме ожидания: Disconnected, причина: NIC compliance
+
+TimeCreated      : 30.10.2025 16:22:51
+Id               : 109
+LevelDisplayName : Сведения
+Message          : Диспетчер питания ядра инициировал завершение работы.
+                   
+                   Причина завершения работы: Kernel API
+
+TimeCreated      : 30.10.2025 7:43:51
+Id               : 172
+LevelDisplayName : Сведения
+Message          : Состояние подключения в режиме ожидания: Disconnected, причина: NIC compliance
+
+TimeCreated      : 29.10.2025 16:27:54
+Id               : 109
+LevelDisplayName : Сведения
+Message          : Диспетчер питания ядра инициировал завершение работы.
+                   
+                   Причина завершения работы: Kernel API
+
+TimeCreated      : 29.10.2025 10:07:08
+Id               : 172
+LevelDisplayName : Сведения
+Message          : Состояние подключения в режиме ожидания: Disconnected, причина: NIC compliance
+
+TimeCreated      : 29.10.2025 10:06:49
+Id               : 109
+LevelDisplayName : Сведения
+Message          : Диспетчер питания ядра инициировал завершение работы.
+                   
+                   Причина завершения работы: Kernel API
+
+TimeCreated      : 29.10.2025 7:46:37
+Id               : 172
+LevelDisplayName : Сведения
+Message          : Состояние подключения в режиме ожидания: Disconnected, причина: NIC compliance
+
+TimeCreated      : 28.10.2025 16:37:18
+Id               : 109
+LevelDisplayName : Сведения
+Message          : Диспетчер питания ядра инициировал завершение работы.
+                   
+                   Причина завершения работы: Kernel API
+
+TimeCreated      : 28.10.2025 14:42:53
+Id               : 172
+LevelDisplayName : Сведения
+Message          : Состояние подключения в режиме ожидания: Disconnected, причина: NIC compliance
+
+TimeCreated      : 28.10.2025 14:42:32
+Id               : 109
+LevelDisplayName : Сведения
+Message          : Диспетчер питания ядра инициировал завершение работы.
+                   
+                   Причина завершения работы: Kernel API
+
+TimeCreated      : 28.10.2025 7:58:47
+Id               : 172
+LevelDisplayName : Сведения
+Message          : Состояние подключения в режиме ожидания: Disconnected, причина: NIC compliance
+
+TimeCreated      : 27.10.2025 16:29:13
+Id               : 109
+LevelDisplayName : Сведения
+Message          : Диспетчер питания ядра инициировал завершение работы.
+                   
+                   Причина завершения работы: Kernel API
+

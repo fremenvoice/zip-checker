@@ -261,19 +261,22 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
       if ($freeMb -lt $MinMB) {
         throw ("Available physical memory {0} MB < required {1} MB. Aborting to avoid crash." -f $freeMb, $MinMB)
       }
-    }     = 
-    try {  = Get-Service -Name 'HFS' -ErrorAction Stop } catch {}
-    if (-not ) {
-      if () {
-        Write-Host ("Disk image formats disabled (service 'HFS' state: {0}). Use -AllowDiskImages only after driver fix / BSOD investigation." -f .Status) -ForegroundColor DarkYellow
+    }
+
+    # Inform about disk image handling and HFS service status
+    $hfs = $null
+    try { $hfs = Get-Service -Name 'HFS' -ErrorAction Stop } catch {}
+    if (-not $AllowDiskImages) {
+      if ($hfs) {
+        Write-Host ("Disk image formats disabled (service 'HFS' state: {0}). Use -AllowDiskImages only after driver fix / BSOD investigation." -f $hfs.Status) -ForegroundColor DarkYellow
       } else {
         Write-Host "Disk image formats (.iso/.vhd/.vmdk/.wim/.dmg) skipped by default after IRQL_NOT_LESS_OR_EQUAL incident. Use -AllowDiskImages to opt in once drivers are fixed." -ForegroundColor DarkYellow
       }
-    } elseif ( -and .Status -ne 'Running') {
-      Write-Warning ("Service 'HFS' status {0}: disk-image audit may still trip IRQL_NOT_LESS_OR_EQUAL." -f .Status)
+    } elseif ($hfs -and $hfs.Status -ne 'Running') {
+      Write-Warning ("Service 'HFS' status {0}: disk-image audit may still trip IRQL_NOT_LESS_OR_EQUAL." -f $hfs.Status)
     }
 
-    Continue = 'Stop'
+    $ErrorActionPreference = 'Stop'
     try { $PSStyle.OutputRendering = 'PlainText' } catch {}
 
     try {

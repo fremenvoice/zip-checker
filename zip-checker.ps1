@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   Глубокая проверка целостности архивов и вложенных архивов (resume-safe).
 .DESCRIPTION
@@ -293,9 +293,11 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
     try {
       [IO.Directory]::CreateDirectory($TempDir) | Out-Null
     } catch {
-      throw ("Не удалось создать временную директорию {0}: {1}" -f $TempDir, $_.Exception.Message)
+      throw ("�� 㤠���� ᮧ���� �६����� ��४��� {0}: {1}" -f $TempDir, $_.Exception.Message)
     }
-  }`r`n  Assert-TempFreeSpace -TargetPath $TempDir -MinFreeGB $MinTempFreeSpaceGB -ThrowOnLow`r`n  $Script:TempBaseDir = $TempDir
+  }
+  Assert-TempFreeSpace -TargetPath $TempDir -MinFreeGB $MinTempFreeSpaceGB -ThrowOnLow
+  $Script:TempBaseDir = $TempDir
   if ($TempCleanupRetentionHours -gt 0) {
     Remove-StaleSessionDirs -BaseDir $Script:TempBaseDir -OlderThanHours $TempCleanupRetentionHours
   }

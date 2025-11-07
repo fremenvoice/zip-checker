@@ -158,7 +158,9 @@ public static extern bool SetProcessWorkingSetSize(global::System.IntPtr hProces
         try { [ArchiveAudit.Native.WsTuner]::SetProcessWorkingSetSize($proc.Handle, -1, -1) | Out-Null } catch {}
         Start-Sleep -Milliseconds 25
       } catch {}
-    }`r`n`r`n    function Remove-StaleSessionDirs {
+    }
+
+    function Remove-StaleSessionDirs {
       param(
         [Parameter(Mandatory)][string]$BaseDir,
         [Parameter(Mandatory)][int]$OlderThanHours

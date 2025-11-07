@@ -18,6 +18,10 @@
   Таймаут на проверку одного архива (по умолчанию 1800 сек).
 .PARAMETER MaxEntryInMemoryMB
   Ограничение объема для буферизации вложений в RAM (МБ). 0 = писать все во временный каталог.
+.PARAMETER MemoryTrimThresholdMB
+  Порог рабочего набора процесса; при превышении вызывается GC+EmptyWorkingSet. 0 = не трогать.
+.PARAMETER TempCleanupRetentionHours
+  Автоудаление старых session_* каталога в TempDir возрастом старше N часов. 0 = отключено.
 .PARAMETER Restart
   Очистить per-root state и начать заново (CSV и broken_latest/errors_latest — заново).
 .PARAMETER Passwords
@@ -31,7 +35,9 @@ param(
   [string]$TempDir = (Join-Path 'T:\' "ArchiveAudit"),
   [int]$Threads = [Math]::Max(1, [Environment]::ProcessorCount),
   [int]$PerFileTimeoutSec = 1800,
-  [int]$MaxEntryInMemoryMB = 8,
+  [int]$MaxEntryInMemoryMB = 0,
+  [int]$MemoryTrimThresholdMB = 4096,
+  [int]$TempCleanupRetentionHours = 48,
   [switch]$Restart,
   [string[]]$Passwords
 )
@@ -46,6 +52,19 @@ begin {
     $Script:TempBaseDir = $null
     $Script:EntryMemoryCutoffBytes = 0
     $Script:EntryFileBufferSizeBytes = 131072
+    $Script:MemoryTrimThresholdMB = [Math]::Max(0, $MemoryTrimThresholdMB)
+
+    if ($Script:MemoryTrimThresholdMB -gt 0 -and -not ("ArchiveAudit.Native.WorkingSet" -as [type])) {
+      Add-Type -Namespace ArchiveAudit.Native -Name WorkingSet -MemberDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class WorkingSet {
+    [DllImport(""psapi.dll"")]
+    public static extern bool EmptyWorkingSet(IntPtr hProcess);
+}
+"@
+    }
 
     $bytesPerMB = [int64](1MB)
     if ($MaxEntryInMemoryMB -lt 0) {
@@ -61,6 +80,12 @@ begin {
       $Script:EntryMemoryCutoffBytes = [int]$limitedBytes
       $displayMb = [math]::Round($Script:EntryMemoryCutoffBytes / [double]$bytesPerMB, 2)
       Write-Host ("Держим вложения <= {0} МБ в RAM, остальные -> TEMP." -f $displayMb) -ForegroundColor DarkCyan
+    }
+
+    if ($Script:MemoryTrimThresholdMB -gt 0) {
+      Write-Host ("Рабочий набор будет подчищаться при превышении {0} МБ (GC + EmptyWorkingSet)." -f $Script:MemoryTrimThresholdMB) -ForegroundColor DarkCyan
+    } else {
+      Write-Host "MemoryTrimThresholdMB=0 — ограничение рабочего набора отключено." -ForegroundColor DarkCyan
     }
 
     function Invoke-ArchiveAuditCleanup {
@@ -79,6 +104,42 @@ begin {
           Write-Warning ("Не удалось удалить временную папку {0}: {1}" -f $Script:TempSessionDir, $_.Exception.Message)
         }
       }
+    }
+
+    function Invoke-MemoryRelief {
+      param([int]$ThresholdMB)
+      if ($ThresholdMB -le 0) { return }
+      try {
+        $proc = [System.Diagnostics.Process]::GetCurrentProcess()
+        if (-not $proc) { return }
+        $currentMB = [math]::Round($proc.WorkingSet64 / 1MB, 2)
+        if ($currentMB -lt $ThresholdMB) { return }
+        Write-Host ("[mem] Working set {0} МБ > {1} МБ — запускаю GC/EmptyWorkingSet." -f $currentMB, $ThresholdMB) -ForegroundColor DarkYellow
+        [System.GC]::Collect()
+        [System.GC]::WaitForPendingFinalizers()
+        [System.GC]::Collect()
+        try { [ArchiveAudit.Native.WorkingSet]::EmptyWorkingSet($proc.Handle) | Out-Null } catch {}
+      } catch {}
+    }
+
+    function Remove-StaleSessionDirs {
+      param(
+        [Parameter(Mandatory)][string]$BaseDir,
+        [Parameter(Mandatory)][int]$OlderThanHours
+      )
+      if ($OlderThanHours -le 0) { return }
+      if (-not (Test-Path -LiteralPath $BaseDir -PathType Container)) { return }
+      $cutoff = (Get-Date).AddHours(-[math]::Abs($OlderThanHours))
+      Get-ChildItem -LiteralPath $BaseDir -Directory -Filter 'session_*' -ErrorAction SilentlyContinue |
+        Where-Object { $_.LastWriteTime -lt $cutoff } |
+        ForEach-Object {
+          try {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+            Write-Host ("Удалён устаревший TEMP: {0}" -f $_.FullName) -ForegroundColor DarkGray
+          } catch {
+            Write-Warning ("Не удалось удалить TEMP {0}: {1}" -f $_.FullName, $_.Exception.Message)
+          }
+        }
     }
 
     $ErrorActionPreference = 'Stop'
@@ -178,6 +239,9 @@ begin {
     }
   }
   $Script:TempBaseDir = $TempDir
+  if ($TempCleanupRetentionHours -gt 0) {
+    Remove-StaleSessionDirs -BaseDir $Script:TempBaseDir -OlderThanHours $TempCleanupRetentionHours
+  }
   $Script:OriginalTempEnv = [ordered]@{ TEMP = $env:TEMP; TMP = $env:TMP }
   $Script:TempSessionDir = Join-Path $TempDir ("session_" + [Guid]::NewGuid().ToString("N"))
   try {
@@ -868,6 +932,7 @@ end {
       Invoke-One -fi $fi
       $done = [System.Threading.Interlocked]::Increment([ref]$processed)
       if (($done % [Math]::Max(1, [int]($total/100))) -eq 0) { Show-Progress -done $done -all $total -elapsed $swAll.Elapsed }
+      Invoke-MemoryRelief -ThresholdMB $Script:MemoryTrimThresholdMB
     }
 
     $swAll.Stop()
@@ -883,6 +948,7 @@ end {
     }
   }
   finally {
+    Invoke-MemoryRelief -ThresholdMB $Script:MemoryTrimThresholdMB
     Invoke-ArchiveAuditCleanup
   }
 }
